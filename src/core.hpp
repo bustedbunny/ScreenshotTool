@@ -71,6 +71,7 @@ struct Annotation {
     float textSize{24};
     std::wstring text;
     bool pixelated{};
+    std::optional<Rect> textBounds; // Captured desktop pixels; absent for legacy text.
 };
 class History {
 public:

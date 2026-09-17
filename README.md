@@ -32,7 +32,11 @@ The default censor is an opaque black rectangle. The optional pixelation mode av
 
 The fixed single-letter shortcuts work after a region is completed, with no Ctrl, Shift, Alt, or Windows key held, and pause during dragging or export. Held-key repeats are ignored. Hover a toolbar control to see its shortcut.
 
-The text editor keeps its standard text-selection, clipboard, undo, and IME behavior. Single-letter shortcuts do not activate while typing or using a native dialog. Enter inserts a line break; click outside the editor or press Ctrl+Enter to finish.
+Text is edited directly on the screenshot with a caret, selection, dashed border, and eight handles. Click with **Text** for a 300-pixel-wide box (limited by the remaining crop width), or drag its initial bounds. Click or drag inside to position the caret or select text; double-click selects a word. Drag the border to move the box and handles to resize it. Width changes wrap text without scaling the font, and the box grows vertically to retain all content.
+
+**Color** and **Text size** apply to the whole active box and preserve its selection. Enter inserts a newline. Ctrl+Enter, a canvas click outside the box, switching tools, or exporting commits one annotation. Committed boxes cannot be reopened. Escape discards active text; during IME composition, the first Escape cancels composition. Empty boxes create no annotation. Clicking elsewhere with Text starts the next box.
+
+While editing, Ctrl+A selects all, Ctrl+C/X/V copy/cut/paste text, and Ctrl+Z/Y (or Ctrl+Shift+Z) undo/redo local edits. Arrow, Home/End, Ctrl, and Shift navigation operate on text. After commit, annotation undo/redo removes or restores the entire box. Single-letter tool shortcuts pause while typing or using a native dialog. Text uses Segoe UI, transparent background, left alignment, pixel-based sizes, and a 16,384 UTF-16-code-unit limit. Windows Text Services Framework supplies IME composition and candidate placement.
 
 Modified Print Screen shortcuts are passed through. If Windows also opens Snipping Tool, turn off **Settings → Accessibility → Keyboard → Use the Print Screen key to open screen capture**. The app does not change this Windows setting.
 

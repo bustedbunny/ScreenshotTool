@@ -30,16 +30,17 @@ const wchar_t* toolTips[]{L"Select: move or resize the crop. Drawing stays ancho
 }
 OverlaySession::OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(std::wstring)> failure)
     :instance_(instance),desktop_(std::move(desktop)),settings_(settings),action_(std::move(action)),failure_(std::move(failure)) {
-    WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=instance_;wc.lpfnWndProc=windowProc;wc.lpszClassName=OverlayClass;wc.hCursor=LoadCursorW(nullptr,IDC_CROSS);
+    WNDCLASSEXW wc{sizeof(wc)};wc.style=CS_DBLCLKS;wc.hInstance=instance_;wc.lpfnWndProc=windowProc;wc.lpszClassName=OverlayClass;wc.hCursor=LoadCursorW(nullptr,IDC_CROSS);
     if(!RegisterClassExW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)wincheck(FALSE,"Register overlay window");
     wc.lpfnWndProc=toolbarProc;wc.lpszClassName=ToolbarClass;wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
     if(!RegisterClassExW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)wincheck(FALSE,"Register toolbar window");
+
+    text_.changed=[this](const TextUpdate& update){textChanged(update);};
     darkBrush_=CreateSolidBrush(RGB(27,30,37));
 }
 OverlaySession::~OverlaySession() {
     closing_=true;ReleaseCapture();
-    if(textEdit_)DestroyWindow(textEdit_);
-    if(textFont_)DeleteObject(textFont_);
+    closeTextEditor();
     if(toolbar_)DestroyWindow(toolbar_);
     for(auto& window:windows_)if(window->hwnd)DestroyWindow(window->hwnd);
     if(toolbarFont_)DeleteObject(toolbarFont_);
@@ -82,18 +83,39 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
     case WM_PAINT: {PAINTSTRUCT paint{};BeginPaint(view.hwnd,&paint);EndPaint(view.hwnd,&paint);if(view.graphics && !closing_)render(view);return 0;}
     case WM_ERASEBKGND:return 1;
     case WM_LBUTTONDOWN:if(!busy_)mouseDown(view.hwnd,cursorPoint());return 0;
+    case WM_LBUTTONDBLCLK:
+        if(!busy_ && text_.active() && selection_.contains(cursorPoint()) && text_.annotation().textBounds->contains(cursorPoint()) && text_.hitBorder(cursorPoint())==Handle::None) {
+            if(textStore_)textStore_->completeComposition();text_.selectWord(text_.hit(cursorPoint()));
+        }else if(!busy_)mouseDown(view.hwnd,cursorPoint());return 0;
+    case WM_CHAR:
+        if(!busy_ && text_.active())text_.character(static_cast<wchar_t>(wp));return 0;
+    case WM_UNICHAR:
+        if(wp==UNICODE_NOCHAR)return TRUE;
+        if(!busy_ && text_.active() && wp<=0x10ffff) {
+            if(wp>0xffff){const auto value=static_cast<UINT32>(wp)-0x10000;text_.character(static_cast<wchar_t>(0xd800+(value>>10)));text_.character(static_cast<wchar_t>(0xdc00+(value&1023)));}
+            else text_.character(static_cast<wchar_t>(wp));
+        }return 0;
+    case WM_TIMER:
+        if(wp==42 && text_.active()){caretVisible_=!caretVisible_;repaintText({},text_.visualBounds());}return 0;
+    case WM_SETFOCUS:if(textStore_){textWindow_=view.hwnd;textStore_->focus(view.hwnd);repaintText({},text_.visualBounds());}return 0;
+    case WM_KILLFOCUS:if(text_.active())repaintText({},text_.visualBounds());return 0;
     case WM_MOUSEMOVE:if(!busy_)mouseMove(cursorPoint());return 0;
     case WM_LBUTTONUP:if(!busy_)mouseUp(cursorPoint());return 0;
     case WM_CAPTURECHANGED:
+        if(textDragging_ && reinterpret_cast<HWND>(lp)!=view.hwnd){textDragging_=textCreating_=textSelecting_=false;text_.endGesture();}
         if(dragging_ && reinterpret_cast<HWND>(lp)!=view.hwnd) {
             // An interrupted initial drag has not established the first region yet.
             if(selecting_ && !firstRegionCompleted_)selection_=original_;
-            dragging_=false;draft_.reset();placeToolbar();repaint();
+            dragging_=false;draft_.reset();placeToolbar();refreshButtons();refreshStatus();repaint();
         }return 0;
     case WM_SETCURSOR: {
         if(LOWORD(lp)!=HTCLIENT)break;
         LPCWSTR cursor=busy_?IDC_WAIT:IDC_CROSS;
-        if(!busy_ && tool_==Tool::Select && !selection_.empty())switch(hitSelection(selection_,cursorPoint())) {
+        Handle hit=Handle::None;
+        if(!busy_ && text_.active() && selection_.contains(cursorPoint())) {
+            hit=text_.hitBorder(cursorPoint());if(hit==Handle::None && text_.annotation().textBounds->contains(cursorPoint()))cursor=IDC_IBEAM;
+        }else if(!busy_ && tool_==Tool::Select && !selection_.empty())hit=hitSelection(selection_,cursorPoint());
+        switch(hit) {
             case Handle::Move:cursor=IDC_SIZEALL;break;
             case Handle::N:case Handle::S:cursor=IDC_SIZENS;break;
             case Handle::E:case Handle::W:cursor=IDC_SIZEWE;break;
@@ -101,11 +123,7 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
             case Handle::NE:case Handle::SW:cursor=IDC_SIZENESW;break;
             default:break;
         }
-        if(textEdit_ && reinterpret_cast<HWND>(wp)==textEdit_)cursor=IDC_IBEAM;
         SetCursor(LoadCursorW(nullptr,cursor));return TRUE;
-    }
-    case WM_CTLCOLOREDIT: {
-        auto dc=reinterpret_cast<HDC>(wp);SetTextColor(dc,RGB(245,246,250));SetBkColor(dc,RGB(27,30,37));return reinterpret_cast<LRESULT>(darkBrush_);
     }
     case WM_DPICHANGED: // Physical desktop bounds are immutable; a live layout/DPI change aborts the session.
         if(IsWindowVisible(view.hwnd) && !closing_)failure_(L"Display scaling changed. Press Print Screen to capture the new layout.");return 0;
@@ -115,10 +133,29 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
 }
 void OverlaySession::render(MonitorWindow& view) {
     const auto& monitor=desktop_->monitors[view.index];
-    view.graphics->present(view.background.Get(),monitor.bounds,selection_,history_.visible(),draft_?&*draft_:nullptr,monitor.hdr?monitor.sdrWhiteNits/80.f:1.f,tool_==Tool::Select && !dragging_);
+    const Annotation* preview=text_.active()?&text_.annotation():(draft_?&*draft_:nullptr);
+    view.graphics->present(view.background.Get(),monitor.bounds,selection_,history_.visible(),preview,monitor.hdr?monitor.sdrWhiteNits/80.f:1.f,tool_==Tool::Select && !dragging_,text_.active()?&text_:nullptr,caretVisible_ && GetFocus()==textWindow_);
 }
-void OverlaySession::repaint() {for(auto& window:windows_)InvalidateRect(window->hwnd,nullptr,FALSE);refreshButtons();}
+void OverlaySession::repaint() {for(auto& window:windows_)InvalidateRect(window->hwnd,nullptr,FALSE);}
+void OverlaySession::repaintText(Rect previous,Rect current) {
+    // Test each extent separately: a jump must not dirty the monitors in between.
+    previous=intersect(previous,selection_);current=intersect(current,selection_);
+    for(auto& window:windows_) {
+        const auto monitor=desktop_->monitors[window->index].bounds;
+        const auto dirty=united(intersect(previous,monitor),intersect(current,monitor));
+        if(dirty.empty())continue;
+        const auto local=nativeRect(translated(dirty,{-monitor.left,-monitor.top}));
+        InvalidateRect(window->hwnd,&local,FALSE);
+    }
+}
 void OverlaySession::mouseDown(HWND hwnd,Point p) {
+    if(text_.active() && selection_.contains(p) && (text_.hitBorder(p)!=Handle::None || text_.annotation().textBounds->contains(p))) {
+        if(textStore_)textStore_->completeComposition();textWindow_=hwnd;SetFocus(hwnd);if(textStore_)textStore_->focus(hwnd);
+        textStart_=p;textOriginal_=*text_.annotation().textBounds;textHandle_=text_.hitBorder(p);
+        textSelecting_=textHandle_==Handle::None;textDragging_=true;textCreating_=false;
+        if(textSelecting_)text_.placeCaret(p,shiftDown());else text_.beginGesture();
+        SetCapture(hwnd);return;
+    }
     commitText();SetFocus(hwnd);p=clampPoint(p,desktop_->bounds());
     dragStart_=p;original_=selection_;draft_.reset();
     selecting_=selection_.empty() || tool_==Tool::Select;
@@ -133,6 +170,16 @@ void OverlaySession::mouseDown(HWND hwnd,Point p) {
     dragging_=true;SetCapture(hwnd);ShowWindow(toolbar_,SW_HIDE);repaint();
 }
 void OverlaySession::mouseMove(Point p) {
+    if(textDragging_) {
+        const Point delta{p.x-textStart_.x,p.y-textStart_.y};
+        if(textCreating_) {
+            if(std::abs(delta.x)>3 || std::abs(delta.y)>3) {
+                auto b=normalized(textStart_,clampPoint(p,selection_));b.right=std::max(b.left+1,b.right);b.bottom=std::max(b.top+1,b.bottom);text_.bounds(b);
+            }
+        }else if(textSelecting_)text_.placeCaret(p,true);
+        else text_.bounds(InlineText::resized(textOriginal_,textHandle_,delta));
+        return;
+    }
     if(!dragging_)return;p=clampPoint(p,desktop_->bounds());
     if(selecting_) {
         if(handle_==Handle::None)selection_=normalized(dragStart_,p);
@@ -144,43 +191,105 @@ void OverlaySession::mouseMove(Point p) {
     repaint();
 }
 void OverlaySession::mouseUp(Point p) {
+    if(textDragging_){mouseMove(p);textDragging_=textCreating_=textSelecting_=false;text_.endGesture();ReleaseCapture();return;}
     if(!dragging_)return;mouseMove(p);dragging_=false;ReleaseCapture();
     if(selecting_ && !firstRegionCompleted_ && !selection_.empty()) {
         firstRegionCompleted_=true;tool_=Tool::Pen;
     }
     if(draft_){history_.add(std::move(*draft_));draft_.reset();}
-    placeToolbar();repaint();
+    placeToolbar();refreshButtons();refreshStatus();repaint();
 }
 void OverlaySession::editText(HWND hwnd,Point p) {
-    textAnnotation_=Annotation{Tool::Text,{p},settings_.color,settings_.strokeWidth,settings_.textSize,L"",false};
-    POINT local{p.x,p.y};ScreenToClient(hwnd,&local);RECT client{};GetClientRect(hwnd,&client);
-    const int width=std::max(60,std::min(450,static_cast<int>(client.right-local.x)-4));
-    const int height=std::max(40,std::min(180,static_cast<int>(client.bottom-local.y)-4));
-    textEdit_=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN|WS_VSCROLL,local.x,local.y,width,height,hwnd,nullptr,instance_,nullptr);
-    wincheck(textEdit_!=nullptr,"Open annotation text editor");
-    textFont_=CreateFontW(-static_cast<int>(std::lround(settings_.textSize)),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
-    SendMessageW(textEdit_,WM_SETFONT,reinterpret_cast<WPARAM>(textFont_),TRUE);SendMessageW(textEdit_,EM_SETLIMITTEXT,16384,0);SetFocus(textEdit_);
+    textWindow_=hwnd;
+    try {
+        text_.begin(p,selection_,settings_.color,settings_.textSize);
+        textStore_.Attach(new TextStore(text_,hwnd,selection_));textStore_->start();
+        textStart_=p;textOriginal_=*text_.annotation().textBounds;textCreating_=textDragging_=true;textSelecting_=false;
+        text_.beginGesture();SetCapture(hwnd);SetFocus(hwnd);
+    }catch(...){closeTextEditor();throw;}
+}
+void OverlaySession::textChanged(const TextUpdate& update) {
+    if(has(update.flags,TextChange::Formatting)) {
+        settings_.color=text_.annotation().color;settings_.textSize=text_.annotation().textSize;refreshButtons();
+    }
+    if(textStore_)textStore_->notify(update);
+    if(has(update.flags,TextChange::Content|TextChange::Selection|TextChange::Composition) || update.previousVisual.empty()) {
+        caretVisible_=true;const UINT blink=GetCaretBlinkTime();
+        if(blink!=INFINITE)SetTimer(owner(),42,std::max(100u,blink),nullptr);
+    }
+    repaintText(update.previousVisual,text_.visualBounds());
+}
+void OverlaySession::closeTextEditor() {
+    textDragging_=textCreating_=textSelecting_=false;KillTimer(owner(),42);
+    if(textStore_){textStore_->stop();textStore_.Reset();}
+    KillTimer(owner(),42);text_.finish(true);textWindow_=nullptr;
+    if(GetCapture())ReleaseCapture();
 }
 void OverlaySession::commitText(bool discard) {
-    if(!textEdit_)return;
-    if(!discard && textAnnotation_) {
-        int length=GetWindowTextLengthW(textEdit_);std::wstring text(static_cast<size_t>(length)+1,L'\0');GetWindowTextW(textEdit_,text.data(),length+1);text.resize(length);
-        if(!text.empty()){textAnnotation_->text=std::move(text);history_.add(std::move(*textAnnotation_));}
+    if(!text_.active())return;
+    if(textStore_){textStore_->completeComposition(discard);textStore_->stop();textStore_.Reset();}
+    const auto previous=text_.visualBounds();
+    if(auto annotation=text_.finish(discard))history_.add(std::move(*annotation));
+    closeTextEditor();refreshButtons();repaintText(previous,{});
+}
+void OverlaySession::textClipboard(bool copy,bool cut) {
+    if(!OpenClipboard(textWindow_))return;
+    struct Close{~Close(){CloseClipboard();}}close;
+    if(copy) {
+        if(text_.start()==text_.end())return;
+        const auto selected=text_.annotation().text.substr(text_.start(),text_.end()-text_.start());std::wstring value;
+        for(wchar_t c:selected){if(c==L'\n')value+=L'\r';value+=c;}
+        HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(value.size()+1)*sizeof(wchar_t));if(!memory)return;
+        auto target=static_cast<wchar_t*>(GlobalLock(memory));if(!target){GlobalFree(memory);return;}
+        std::copy(value.c_str(),value.c_str()+value.size()+1,target);GlobalUnlock(memory);
+        if(!EmptyClipboard() || !SetClipboardData(CF_UNICODETEXT,memory)){GlobalFree(memory);return;}
+        if(cut)text_.insert(L"");
+    }else {
+        HANDLE memory=GetClipboardData(CF_UNICODETEXT);if(!memory)return;
+        auto source=static_cast<const wchar_t*>(GlobalLock(memory));if(!source)return;
+        std::wstring value;const auto count=GlobalSize(memory)/sizeof(wchar_t);
+        for(size_t i=0;i<count && source[i] && value.size()<InlineText::limit;++i) {
+            if(source[i]==L'\r'){value+=L'\n';if(i+1<count && source[i+1]==L'\n')++i;}else value+=source[i];
+        }
+        GlobalUnlock(memory);text_.insert(value);
     }
-    HWND edit=textEdit_;textEdit_=nullptr;DestroyWindow(edit);textAnnotation_.reset();
-    if(textFont_){DeleteObject(textFont_);textFont_=nullptr;}
-    repaint();
 }
 bool OverlaySession::translate(MSG& msg) {
-    if(msg.message!=WM_KEYDOWN && msg.message!=WM_SYSKEYDOWN)return false;
+    if(msg.message!=WM_KEYDOWN && msg.message!=WM_SYSKEYDOWN && msg.message!=WM_KEYUP && msg.message!=WM_SYSKEYUP)return false;
     const HWND focus=GetFocus();bool ours=focus==toolbar_ || (toolbar_ && IsChild(toolbar_,focus));
+
     for(const auto& window:windows_)ours=ours || focus==window->hwnd || IsChild(window->hwnd,focus);
     if(!ours)return false; // Native dialogs retain all of their keyboard behavior.
-    if(textEdit_ && focus==textEdit_) {
-        if(msg.wParam==VK_ESCAPE){commitText(true);SetFocus(owner());return true;}
-        if(msg.wParam==VK_RETURN && controlDown()){commitText();SetFocus(owner());return true;}
-        return false; // Ctrl+C/S/Z/Y, selection, IME, and clipboard belong to the edit control.
+    if(busy_)return true;
+    if(text_.active() && (focus!=toolbar_ && !IsChild(toolbar_,focus))) {
+        const bool down=msg.message==WM_KEYDOWN || msg.message==WM_SYSKEYDOWN;
+        if(down && msg.wParam==VK_ESCAPE) {
+            if(text_.composing()){if(textStore_)textStore_->completeComposition(true);}else commitText(true);return true;
+        }
+        if(down && msg.wParam==VK_RETURN && controlDown()){commitText();return true;}
+        if(textStore_ && textStore_->key(msg))return true;
+        if(!down)return false;
+        if(controlDown())switch(msg.wParam) {
+            case 'A':text_.select(0,static_cast<UINT32>(text_.annotation().text.size()));return true;
+            case 'C':textClipboard(true,false);return true;
+            case 'X':textClipboard(true,true);return true;
+            case 'V':textClipboard(false,false);return true;
+            case 'Z':if(shiftDown())text_.redo();else text_.undo();return true;
+            case 'Y':text_.redo();return true;
+            case 'S':command(shiftDown()?SaveAsId:SaveId);return true;
+            case VK_INSERT:textClipboard(true,false);return true;
+        }
+        if(shiftDown() && msg.wParam==VK_INSERT){textClipboard(false,false);return true;}
+        if(shiftDown() && msg.wParam==VK_DELETE){textClipboard(true,true);return true;}
+        switch(msg.wParam) {
+            case VK_LEFT:case VK_RIGHT:case VK_UP:case VK_DOWN:case VK_HOME:case VK_END:text_.navigate(static_cast<UINT>(msg.wParam),shiftDown(),controlDown());return true;
+            case VK_BACK:text_.erase(true,controlDown());return true;
+            case VK_DELETE:text_.erase(false,controlDown());return true;
+            case VK_TAB:text_.insert(L"\t");return true;
+        }
+        return false;
     }
+    if(msg.message==WM_KEYUP || msg.message==WM_SYSKEYUP)return false;
     if(busy_)return true;
     if(msg.wParam==VK_ESCAPE){action_(SessionAction::Cancel);return true;}
     if(controlDown())switch(msg.wParam) {
@@ -204,7 +313,8 @@ bool OverlaySession::translate(MSG& msg) {
 }
 void OverlaySession::busy(bool value) {
     busy_=value;for(auto& view:windows_)EnableWindow(view->hwnd,!value);EnableWindow(toolbar_,!value);
-    if(!value){SetForegroundWindow(owner());SetFocus(owner());}refreshButtons();
+
+    if(!value){SetForegroundWindow(owner());SetFocus(owner());}refreshButtons();refreshStatus();
 }
 void OverlaySession::validateDisplays() {
     if(errorReported_)return;
@@ -213,7 +323,7 @@ void OverlaySession::validateDisplays() {
         throw std::runtime_error("Windows SDR brightness changed. Press Print Screen to capture at the new brightness.");
 }
 void OverlaySession::createToolbar() {
-    toolbar_=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,ToolbarClass,L"ScreenshotTool tools",WS_POPUP|WS_BORDER,0,0,580,140,owner(),nullptr,instance_,this);
+    toolbar_=CreateWindowExW(WS_EX_TOPMOST|WS_EX_TOOLWINDOW,ToolbarClass,L"ScreenshotTool tools",WS_POPUP|WS_BORDER|WS_CLIPCHILDREN,0,0,580,140,owner(),nullptr,instance_,this);
     wincheck(toolbar_!=nullptr,"Create annotation toolbar");
     tooltip_=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,toolbar_,nullptr,instance_,nullptr);
     auto add=[&](int id,const wchar_t* label,const wchar_t* tip) {
@@ -231,7 +341,7 @@ void OverlaySession::createToolbar() {
         TOOLINFOW info{sizeof(info)};info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.hwnd=toolbar_;info.uId=reinterpret_cast<UINT_PTR>(button.hwnd);info.lpszText=button.tip.data();
         SendMessageW(tooltip_,TTM_ADDTOOLW,0,reinterpret_cast<LPARAM>(&info));
     }
-    layoutToolbar(96);refreshButtons();
+    layoutToolbar(96);refreshButtons();refreshStatus();
 }
 void OverlaySession::layoutToolbar(unsigned dpi) {
     toolbarDpi_=dpi;const auto px=[&](int n){return MulDiv(n,static_cast<int>(dpi),96);};
@@ -260,24 +370,50 @@ void OverlaySession::placeToolbar() {
     if(y+toolbarHeight_>info.rcWork.bottom)y=selection_.top-toolbarHeight_-10;
     x=std::clamp(x,static_cast<int>(info.rcWork.left)+4,std::max(static_cast<int>(info.rcWork.left)+4,static_cast<int>(info.rcWork.right)-toolbarWidth_-4));
     y=std::clamp(y,static_cast<int>(info.rcWork.top)+4,std::max(static_cast<int>(info.rcWork.top)+4,static_cast<int>(info.rcWork.bottom)-toolbarHeight_-4));
-    SetWindowPos(toolbar_,HWND_TOPMOST,x,y,toolbarWidth_,toolbarHeight_,SWP_NOACTIVATE|SWP_SHOWWINDOW);InvalidateRect(toolbar_,nullptr,FALSE);
+    RECT current{};GetWindowRect(toolbar_,&current);
+    if(current.left==x && current.top==y && current.right-current.left==toolbarWidth_ && current.bottom-current.top==toolbarHeight_ && IsWindowVisible(toolbar_))return;
+    SetWindowPos(toolbar_,HWND_TOPMOST,x,y,toolbarWidth_,toolbarHeight_,SWP_NOACTIVATE|SWP_SHOWWINDOW);
 }
 void OverlaySession::refreshButtons() {
     if(!toolbar_)return;
-    SetDlgItemTextW(toolbar_,WidthId,(L"Width: "+std::to_wstring(static_cast<int>(settings_.strokeWidth))+L" px").c_str());
-    SetDlgItemTextW(toolbar_,TextSizeId,(L"Text: "+std::to_wstring(static_cast<int>(settings_.textSize))+L" px").c_str());
-    SetDlgItemTextW(toolbar_,CensorModeId,pixelated_?L"Cover: pixelate":L"Cover: black");
-    EnableWindow(GetDlgItem(toolbar_,UndoId),!busy_ && history_.canUndo());EnableWindow(GetDlgItem(toolbar_,RedoId),!busy_ && history_.canRedo());
-    for(int id:{CopyId,SaveId,SaveAsId})EnableWindow(GetDlgItem(toolbar_,id),!busy_ && !selection_.empty());
-    InvalidateRect(toolbar_,nullptr,FALSE);
-    for(const auto& button:buttons_)InvalidateRect(button.hwnd,nullptr,FALSE);
+    for(auto& button:buttons_) {
+        auto label=button.label;bool enabled=true;
+        switch(button.id) {
+        case WidthId:label=L"Width: "+std::to_wstring(static_cast<int>(settings_.strokeWidth))+L" px";break;
+        case TextSizeId:label=L"Text: "+std::to_wstring(static_cast<int>(settings_.textSize))+L" px";break;
+        case CensorModeId:label=pixelated_?L"Cover: pixelate":L"Cover: black";break;
+        case UndoId:enabled=!busy_ && history_.canUndo();break;
+        case RedoId:enabled=!busy_ && history_.canRedo();break;
+        case CopyId:case SaveId:case SaveAsId:enabled=!busy_ && !selection_.empty();break;
+        }
+        const bool selected=button.id>=ToolBase && button.id<ToolBase+9 && tool_==toolAt(button.id);
+        const std::optional<Pixel> swatch=button.id==ColorId?std::optional{settings_.color}:std::nullopt;
+        const bool labelChanged=label!=button.label,enabledChanged=enabled!=button.enabled;
+        const bool appearanceChanged=selected!=button.selected || swatch!=button.swatch;
+        button.label=std::move(label);button.enabled=enabled;button.selected=selected;button.swatch=swatch;
+        if(labelChanged)SetWindowTextW(button.hwnd,button.label.c_str());
+        if(enabledChanged)EnableWindow(button.hwnd,enabled);
+        if(appearanceChanged && !labelChanged && !enabledChanged)InvalidateRect(button.hwnd,nullptr,FALSE);
+    }
+}
+RECT OverlaySession::statusRect() const {
+    RECT bounds{};GetClientRect(toolbar_,&bounds);
+    return {MulDiv(12,toolbarDpi_,96),MulDiv(118,toolbarDpi_,96),bounds.right-8,bounds.bottom};
+}
+void OverlaySession::refreshStatus() {
+    if(!toolbar_)return;
+    auto status=busy_?L"Exporting\u2026":std::to_wstring(selection_.width())+L" \u00d7 "+std::to_wstring(selection_.height())+L" px  \u00b7  "+(desktop_->intersectsHdr(selection_)?L"HDR + SDR":L"SDR")+L"  \u00b7  Esc to cancel";
+    if(status==toolbarStatus_)return;toolbarStatus_=std::move(status);
+    const auto line=statusRect();InvalidateRect(toolbar_,&line,FALSE);
 }
 void OverlaySession::command(int id) {
-    if(busy_)return;commitText();
+    if(busy_)return;
+    const bool formatting=id==ColorId || id==TextSizeId;
+    if(!formatting)commitText();
     if(id>=ToolBase && id<ToolBase+9){tool_=toolAt(id);refreshButtons();repaint();return;}
     switch(id) {
-    case UndoId:history_.undo();repaint();break;
-    case RedoId:history_.redo();repaint();break;
+    case UndoId:history_.undo();refreshButtons();repaint();break;
+    case RedoId:history_.redo();refreshButtons();repaint();break;
     case CopyId:if(!selection_.empty())action_(SessionAction::Copy);break;
     case SaveId:if(!selection_.empty())action_(SessionAction::QuickSave);break;
     case SaveAsId:if(!selection_.empty())action_(SessionAction::SaveAs);break;
@@ -286,27 +422,35 @@ void OverlaySession::command(int id) {
     case ColorId: {
         static COLORREF custom[16]{};CHOOSECOLORW choose{sizeof(choose)};choose.hwndOwner=toolbar_;choose.Flags=CC_FULLOPEN|CC_RGBINIT;choose.lpCustColors=custom;
         choose.rgbResult=RGB(static_cast<int>(settings_.color.r*255),static_cast<int>(settings_.color.g*255),static_cast<int>(settings_.color.b*255));
-        if(ChooseColorW(&choose))settings_.color={GetRValue(choose.rgbResult)/255.f,GetGValue(choose.rgbResult)/255.f,GetBValue(choose.rgbResult)/255.f,1};refreshButtons();break;
+        if(ChooseColorW(&choose))settings_.color={GetRValue(choose.rgbResult)/255.f,GetGValue(choose.rgbResult)/255.f,GetBValue(choose.rgbResult)/255.f,1};break;
     }
     case WidthId:case TextSizeId: {
         HMENU menu=CreatePopupMenu();const std::vector<int> values=id==WidthId?std::vector<int>{1,2,3,5,8,12,18,24}:std::vector<int>{8,12,16,20,24,32,48,72,96,144};
         for(const int value:values) {auto label=std::to_wstring(value)+L" px";AppendMenuW(menu,MF_STRING,value,label.c_str());}
         RECT bounds{};GetWindowRect(GetDlgItem(toolbar_,id),&bounds);
         UINT chosen=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY,bounds.left,bounds.bottom,0,toolbar_,nullptr);DestroyMenu(menu);
-        if(chosen){if(id==WidthId)settings_.strokeWidth=static_cast<float>(chosen);else settings_.textSize=static_cast<float>(chosen);}refreshButtons();break;
+        if(chosen){if(id==WidthId)settings_.strokeWidth=static_cast<float>(chosen);else settings_.textSize=static_cast<float>(chosen);}if(id==WidthId)refreshButtons();break;
     }
     }
+    if(formatting) {
+        if(text_.active()){text_.format(settings_.color,settings_.textSize);SetFocus(textWindow_);if(textStore_)textStore_->focus(textWindow_);}
+        else refreshButtons();
+    }
+}
+void OverlaySession::paintToolbar(HDC dc,const RECT& dirty) {
+    FillRect(dc,&dirty,darkBrush_);
+    auto old=SelectObject(dc,toolbarFont_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(164,177,195));
+    RECT line=statusRect(),intersection{};
+    if(IntersectRect(&intersection,&line,&dirty))DrawTextW(dc,toolbarStatus_.c_str(),-1,&line,DT_LEFT|DT_SINGLELINE|DT_NOPREFIX);
+    SelectObject(dc,old);
 }
 LRESULT OverlaySession::toolbarMessage(UINT msg,WPARAM wp,LPARAM lp) {
     switch(msg) {
     case WM_COMMAND:if(HIWORD(wp)==BN_CLICKED)command(LOWORD(wp));return 0;
     case WM_ERASEBKGND:return 1;
     case WM_PAINT: {
-        PAINTSTRUCT paint{};HDC dc=BeginPaint(toolbar_,&paint);RECT bounds{};GetClientRect(toolbar_,&bounds);FillRect(dc,&bounds,darkBrush_);
-        auto old=SelectObject(dc,toolbarFont_);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,RGB(164,177,195));
-        auto status=busy_?L"Exporting…":std::to_wstring(selection_.width())+L" × "+std::to_wstring(selection_.height())+L" px  ·  "+(desktop_->intersectsHdr(selection_)?L"HDR + SDR":L"SDR")+L"  ·  Esc to cancel";
-        RECT line{MulDiv(12,toolbarDpi_,96),MulDiv(118,toolbarDpi_,96),bounds.right-8,bounds.bottom};DrawTextW(dc,status.c_str(),-1,&line,DT_LEFT|DT_SINGLELINE|DT_NOPREFIX);
-        SelectObject(dc,old);EndPaint(toolbar_,&paint);return 0;
+        PAINTSTRUCT paint{};HDC dc=BeginPaint(toolbar_,&paint);paintToolbar(dc,paint.rcPaint);
+        EndPaint(toolbar_,&paint);return 0;
     }
     case WM_DRAWITEM: {
         auto item=reinterpret_cast<DRAWITEMSTRUCT*>(lp);if(item->CtlType!=ODT_BUTTON)break;

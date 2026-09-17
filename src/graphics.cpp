@@ -30,6 +30,11 @@ Graphics::Graphics(std::optional<std::int64_t> luid,bool software) {
     check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),reinterpret_cast<IUnknown**>(write_.GetAddressOf())),"Create text renderer");
     auto style=D2D1::StrokeStyleProperties();style.startCap=style.endCap=style.dashCap=D2D1_CAP_STYLE_ROUND;style.lineJoin=D2D1_LINE_JOIN_ROUND;
     check(d2d_->CreateStrokeStyle(style,nullptr,0,&roundedStroke_),"Create pen style");
+    style=D2D1::StrokeStyleProperties();style.dashStyle=D2D1_DASH_STYLE_DASH;
+    check(d2d_->CreateStrokeStyle(style,nullptr,0,&dashedStroke_),"Create dashed text outline");
+    for(auto* brush:{std::addressof(annotationBrush_),std::addressof(dimBrush_),std::addressof(borderBrush_),std::addressof(inkBrush_),std::addressof(highlightBrush_),std::addressof(paperBrush_)})
+        check(context_->CreateSolidColorBrush(D2D1::ColorF(0,0,0,1),brush->GetAddressOf()),"Create reusable drawing brush");
+    dimBrush_->SetColor(D2D1::ColorF(0,0,0,0.25f));
 }
 ComPtr<ID2D1Bitmap1> Graphics::upload(const Image& image) {
     ComPtr<ID2D1Bitmap1> bitmap;
@@ -81,43 +86,43 @@ Image Graphics::toneMap(const Image& hdr,float white) {
     context_->BeginDraw();context_->Clear(D2D1::ColorF(0,0,0,1));context_->DrawImage(tone.Get());
     check(context_->EndDraw(),"Tone-map HDR image");context_->SetTarget(nullptr);return readback(output.Get());
 }
-void Graphics::annotation(const Annotation& a,float whiteScale) {
+void Graphics::annotation(const Annotation& a,float whiteScale,IDWriteTextLayout* sharedLayout) {
     if(a.points.empty())return;
     auto c=scaled({srgbToLinear(a.color.r),srgbToLinear(a.color.g),srgbToLinear(a.color.b),a.color.a},whiteScale);
     if(a.tool==Tool::Highlighter)c.a=0.32f;
     if(a.tool==Tool::Censor)c={0,0,0,1};
-    ComPtr<ID2D1SolidColorBrush> brush;check(context_->CreateSolidColorBrush(D2D1::ColorF(c.r,c.g,c.b,c.a),&brush),"Create annotation brush");
+    auto* brush=annotationBrush_.Get();brush->SetColor(D2D1::ColorF(c.r,c.g,c.b,c.a));
     const Point first=a.points.front(),last=a.points.back();
     const auto box=normalized(first,last);
     switch(a.tool) {
     case Tool::Pen:case Tool::Highlighter: {
         const float width=a.tool==Tool::Highlighter?a.width*4.f:a.width;
-        if(a.points.size()==1) {context_->FillEllipse(D2D1::Ellipse(dpoint(first),width/2,width/2),brush.Get());break;}
+        if(a.points.size()==1) {context_->FillEllipse(D2D1::Ellipse(dpoint(first),width/2,width/2),brush);break;}
         ComPtr<ID2D1PathGeometry> path;ComPtr<ID2D1GeometrySink> sink;
         check(d2d_->CreatePathGeometry(&path),"Create pen path");check(path->Open(&sink),"Open pen path");
         sink->BeginFigure(dpoint(first),D2D1_FIGURE_BEGIN_HOLLOW);
         for(size_t i=1;i<a.points.size();++i)sink->AddLine(dpoint(a.points[i]));
         sink->EndFigure(D2D1_FIGURE_END_OPEN);check(sink->Close(),"Finish pen path");
-        context_->DrawGeometry(path.Get(),brush.Get(),width,roundedStroke_.Get());break;
+        context_->DrawGeometry(path.Get(),brush,width,roundedStroke_.Get());break;
     }
-    case Tool::Rectangle:context_->DrawRectangle(drect(box),brush.Get(),a.width);break;
-    case Tool::Ellipse:context_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F((box.left+box.right)/2.f,(box.top+box.bottom)/2.f),box.width()/2.f,box.height()/2.f),brush.Get(),a.width);break;
+    case Tool::Rectangle:context_->DrawRectangle(drect(box),brush,a.width);break;
+    case Tool::Ellipse:context_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F((box.left+box.right)/2.f,(box.top+box.bottom)/2.f),box.width()/2.f,box.height()/2.f),brush,a.width);break;
     case Tool::Arrow:case Tool::Line: {
-        context_->DrawLine(dpoint(first),dpoint(last),brush.Get(),a.width,roundedStroke_.Get());
+        context_->DrawLine(dpoint(first),dpoint(last),brush,a.width,roundedStroke_.Get());
         if(a.tool==Tool::Arrow) {
             float angle=std::atan2(static_cast<float>(last.y-first.y),static_cast<float>(last.x-first.x));
             float len=std::max(12.f,a.width*4);
-            for(float offset:{-0.55f,0.55f})context_->DrawLine(dpoint(last),D2D1::Point2F(last.x-len*std::cos(angle+offset),last.y-len*std::sin(angle+offset)),brush.Get(),a.width,roundedStroke_.Get());
+            for(float offset:{-0.55f,0.55f})context_->DrawLine(dpoint(last),D2D1::Point2F(last.x-len*std::cos(angle+offset),last.y-len*std::sin(angle+offset)),brush,a.width,roundedStroke_.Get());
         }break;
     }
     case Tool::Text: {
-        ComPtr<IDWriteTextFormat> format;check(write_->CreateTextFormat(L"Segoe UI",nullptr,DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,a.textSize,L"",&format),"Create annotation text");
-        format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-        context_->DrawText(a.text.data(),static_cast<UINT32>(a.text.size()),format.Get(),D2D1::RectF(static_cast<float>(first.x),static_cast<float>(first.y),static_cast<float>(first.x)+32768,static_cast<float>(first.y)+32768),brush.Get());break;
+        auto layout=sharedLayout?ComPtr<IDWriteTextLayout>(sharedLayout):textLayout(a);
+        const auto origin=a.textBounds?Point{a.textBounds->left,a.textBounds->top}:first;
+        context_->DrawTextLayout(dpoint(origin),layout.Get(),brush);break;
     }
     case Tool::Censor: {
         context_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
-        context_->FillRectangle(drect(box),brush.Get());context_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);break;
+        context_->FillRectangle(drect(box),brush);context_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);break;
     }
     default:break;
     }
@@ -133,7 +138,7 @@ void Graphics::pixelatedCensor(ID2D1Bitmap1* output,Rect bounds,Rect selection,c
     context_->BeginDraw();context_->DrawBitmap(replacement.Get(),local,1,D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,local);
     check(context_->EndDraw(),"Flatten pixelated censor");
 }
-void Graphics::document(ID2D1Bitmap1* output,Rect bounds,Rect selection,std::span<const Annotation> annotations,float white) {
+void Graphics::document(ID2D1Bitmap1* output,Rect bounds,Rect selection,std::span<const Annotation> annotations,float white,IDWriteTextLayout* layout) {
     const auto visible=intersect(bounds,selection);if(visible.empty())return;
     auto begin=[&]{context_->SetTarget(output);context_->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(-bounds.left),static_cast<float>(-bounds.top)));context_->BeginDraw();context_->PushAxisAlignedClip(drect(visible),D2D1_ANTIALIAS_MODE_ALIASED);};
     begin();
@@ -141,7 +146,7 @@ void Graphics::document(ID2D1Bitmap1* output,Rect bounds,Rect selection,std::spa
         if(a.tool==Tool::Censor && a.pixelated && !a.points.empty()) {
             context_->PopAxisAlignedClip();check(context_->EndDraw(),"Render annotations before censor");
             pixelatedCensor(output,bounds,selection,a);begin();
-        } else annotation(a,white);
+        } else annotation(a,white,layout);
     }
     context_->PopAxisAlignedClip();check(context_->EndDraw(),"Render annotations");context_->SetTarget(nullptr);
 }
@@ -175,28 +180,49 @@ void Graphics::attach(HWND window,int width,int height) {
     auto props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(desc.Format,D2D1_ALPHA_MODE_IGNORE),96,96);
     check(context_->CreateBitmapFromDxgiSurface(surface.Get(),&props,&backbuffer_),"Create overlay drawing target");
 }
-void Graphics::present(ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float white,bool handles) {
+void Graphics::present(ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float white,bool handles,const InlineText* text,bool caretVisible) {
     if(!factory_->IsCurrent())throw std::runtime_error("Display configuration changed. Capture again.");
     context_->SetTarget(backbuffer_.Get());context_->SetTransform(D2D1::Matrix3x2F::Identity());context_->BeginDraw();
     context_->DrawBitmap(background,nullptr,1,D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     check(context_->EndDraw(),"Draw frozen desktop");
     document(backbuffer_.Get(),monitor,selection,annotations,white);
-    if(draft)document(backbuffer_.Get(),monitor,selection,{draft,1},white);
+    if(draft)document(backbuffer_.Get(),monitor,selection,{draft,1},white,text?text->layout():nullptr);
     context_->SetTarget(backbuffer_.Get());context_->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(-monitor.left),static_cast<float>(-monitor.top)));context_->BeginDraw();
-    ComPtr<ID2D1SolidColorBrush> dim,border;
-    check(context_->CreateSolidColorBrush(D2D1::ColorF(0,0,0,0.25f),&dim),"Create overlay shade");
+    auto* dim=dimBrush_.Get();auto* border=borderBrush_.Get();
     const auto selected=intersect(monitor,selection);
-    if(selected.empty())context_->FillRectangle(drect(monitor),dim.Get());
+    if(selected.empty())context_->FillRectangle(drect(monitor),dim);
     else {
         for(const auto r:{Rect{monitor.left,monitor.top,monitor.right,selected.top},Rect{monitor.left,selected.bottom,monitor.right,monitor.bottom},Rect{monitor.left,selected.top,selected.left,selected.bottom},Rect{selected.right,selected.top,monitor.right,selected.bottom}})
-            if(!r.empty())context_->FillRectangle(drect(r),dim.Get());
-        check(context_->CreateSolidColorBrush(D2D1::ColorF(0.13f*white,0.6f*white,white,1),&border),"Create selection border");
-        context_->DrawRectangle(drect(selection),border.Get(),1.f);
+            if(!r.empty())context_->FillRectangle(drect(r),dim);
+        border->SetColor(D2D1::ColorF(0.13f*white,0.6f*white,white,1));
+        context_->DrawRectangle(drect(selection),border,1.f);
         if(handles) {
             const int mx=(selection.left+selection.right)/2,my=(selection.top+selection.bottom)/2;
             for(const Point p: {Point{selection.left,selection.top},Point{mx,selection.top},Point{selection.right,selection.top},Point{selection.right,my},Point{selection.right,selection.bottom},Point{mx,selection.bottom},Point{selection.left,selection.bottom},Point{selection.left,my}})
-                context_->FillRectangle(drect({p.x-4,p.y-4,p.x+4,p.y+4}),border.Get());
+                context_->FillRectangle(drect({p.x-4,p.y-4,p.x+4,p.y+4}),border);
         }
+    }
+    if(text && text->active() && !selected.empty()) {
+        context_->PushAxisAlignedClip(drect(selected),D2D1_ANTIALIAS_MODE_ALIASED);
+        const auto box=*text->annotation().textBounds;
+        auto* ink=inkBrush_.Get();auto* highlight=highlightBrush_.Get();auto* paper=paperBrush_.Get();
+        ink->SetColor(D2D1::ColorF(0.05f*white,0.35f*white,0.8f*white,1));
+        highlight->SetColor(D2D1::ColorF(0.1f*white,0.4f*white,white,0.3f));
+        paper->SetColor(D2D1::ColorF(white,white,white,1));
+        for(const auto r:text->rangeRects(text->start(),text->end()))context_->FillRectangle(r,highlight);
+        context_->DrawRectangle(drect(box),paper,2.f);
+        context_->DrawRectangle(drect(box),ink,1.f,dashedStroke_.Get());
+        const int mx=(box.left+box.right)/2,my=(box.top+box.bottom)/2;
+        for(const Point p:{Point{box.left,box.top},Point{mx,box.top},Point{box.right,box.top},Point{box.right,my},Point{box.right,box.bottom},Point{mx,box.bottom},Point{box.left,box.bottom},Point{box.left,my}}) {
+            const auto handle=drect({p.x-3,p.y-3,p.x+3,p.y+3});context_->FillRectangle(handle,paper);context_->DrawRectangle(handle,ink,1.f);
+        }
+        if(text->composing())for(const auto r:text->rangeRects(text->compositionRange().first,text->compositionRange().second))
+            context_->DrawLine(D2D1::Point2F(r.left,r.bottom-1),D2D1::Point2F(r.right,r.bottom-1),ink,1.f);
+        if(caretVisible) {
+            auto caret=text->caretRect(text->caret());auto outline=caret;--outline.left;++outline.right;
+            context_->FillRectangle(drect(outline),paper);context_->FillRectangle(drect(caret),ink);
+        }
+        context_->PopAxisAlignedClip();
     }
     check(context_->EndDraw(),"Draw selection overlay");context_->SetTarget(nullptr);
     check(swapchain_->Present(1,0),"Present overlay. The graphics device may have disconnected; capture again");

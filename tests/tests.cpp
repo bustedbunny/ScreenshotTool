@@ -1,6 +1,10 @@
 #include "capture.hpp"
 #include "capture_frame.hpp"
 #include "export.hpp"
+#include "text_store.hpp"
+#include "overlay.hpp"
+#include <commctrl.h>
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <set>
@@ -268,6 +272,8 @@ void colorTests() {
         auto censor=shape(Tool::Censor,{32,32},{80,80});censor.pixelated=true;
         std::vector<Annotation> withCensor{line,censor};
         graphics.present(background.Get(),{0,0,128,128},{16,16,112,112},withCensor,nullptr,3,true);
+        InlineText text;text.begin({24,24},{16,16,112,112},{1,0,0,1},16);text.insert(L"edit\ntext");text.select(0,4);text.beginComposition();
+        for(float white:{1.f,3.f})graphics.present(background.Get(),{0,0,128,128},{16,16,112,112},withCensor,&text.annotation(),white,true,&text,true);
     });
     test("real file pair, collision avoidance, Save As replacement",[]{
         const auto folder=std::filesystem::temp_directory_path()/(L"ScreenshotTool-test-"+uniqueToken());std::filesystem::create_directories(folder);
@@ -279,7 +285,9 @@ void colorTests() {
         for(const auto& file:std::filesystem::directory_iterator(folder))require(file.path().extension()!=L".tmp" && file.path().extension()!=L".lock","No temporary artifacts");
     });
 }
+#include "text_tests.hpp"
 }
+#include "overlay_tests.hpp"
 int main(int argc,char** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);ComApartment com;
@@ -287,6 +295,7 @@ int main(int argc,char** argv) {
             auto desktop=CaptureService{}.capture();std::cout<<"Captured "<<desktop->monitors.size()<<" monitors; no image written.\n";
             for(const auto& m:desktop->monitors)std::wcout<<m.deviceName<<L" "<<m.bounds.width()<<L"x"<<m.bounds.height()<<L" origin="<<m.bounds.left<<L","<<m.bounds.top<<L" HDR="<<m.hdr<<L" SDRWhite="<<m.sdrWhiteNits<<L" rotation="<<static_cast<int>(m.rotation)<<L" adapter="<<m.adapterLuid<<L'\n';return 0;
         }
-        captureTests();geometryTests();colorTests();std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
+        if(argc>1 && std::string_view(argv[1])=="--text-drag-benchmark"){OverlayTestAccess::benchmark();return 0;}
+        captureTests();geometryTests();textTests();textStoreTests();OverlayTestAccess::tests();colorTests();std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

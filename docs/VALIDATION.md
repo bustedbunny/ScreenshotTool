@@ -1,5 +1,81 @@
 # Validation record
 
+## Text drag lag and toolbar flicker - 2026-09-17
+
+Release build succeeded with MSVC x64. Final CTest run: **43 checks passed, 0 failed** in `ScreenshotToolTests` (one CTest executable, 0.40 seconds). `git diff --check` passed. Existing undo, composition, crop, preview/export pixel, acquisition, codec and file-transaction checks remain passing.
+
+The normal build could not replace `build/Release/ScreenshotTool.exe` because that executable was already running. It was left running; a separate Release build completed at **`build/drag-validation/Release/ScreenshotTool.exe`**. The running instance still contains the older code. Reproduction commands (using the Visual Studio bundled CMake/CTest tools):
+
+```powershell
+cmake --preset windows-x64 -B build/drag-validation
+cmake --build build/drag-validation --config Release --parallel
+ctest --test-dir build/drag-validation -C Release --output-on-failure
+./build/drag-validation/Release/ScreenshotToolTests.exe --text-drag-benchmark
+```
+
+Six added checks cover:
+
+1. Layout identity retained across translation, height-only resize, color, selection, geometry undo/redo and composition decorations; width, font size and content still rebuild/reflow. Repeated normalized bounds, including heights clamped to content, emit no change.
+2. Real rendered glyph pixels overflowing a narrow box fit within the cached visual extent.
+3. Geometry reports TSF layout changes and translated caret extents, including deferred notification under a lock, without false text/selection notifications. Actual selection still notifies.
+4. Toolbar message counts and update regions: repeated refresh/canvas repaint causes no mutation; changed labels, enabled state, tool selection and color swatches affect only the relevant controls. Status invalidation stays within its own rectangle.
+5. Production toolbar has `WS_CLIPCHILDREN`. Offscreen GDI painting fills only the dirty area and preserves excluded child-button pixels. The test emulates BeginPaint's child exclusion on a memory DC; physical on-screen flicker remains an interactive check.
+6. Production drag handler reuses text storage/layout, preserves settings and the caret timer interval/visibility, keeps the toolbar visible, and invalidates only monitors intersecting old/new visual extents. Monitor jumps skip intervening displays; handle and glyph overhang include adjacent displays; crop clipping excludes invisible regions. Repeated pointers and identical mouse-up cause no extra text or toolbar update.
+
+The existing FP16 presentation check also exercises active selection, composition, caret, border and handles at two white scales using the cached Direct2D brushes and stroke styles. Toolbar/invalidation fixtures are real offscreen Win32 windows; they do not capture or inject input into the desktop.
+
+### Drag-handler measurements
+
+Release benchmark on this machine, 20,000 moving pointer samples followed by 20,000 identical samples per box. Timing includes `OverlaySession::mouseMove`, geometry handling, a TSF test sink, and Win32 monitor invalidation across three synthetic monitor bounds. Initial layout creation, undo snapshot setup, message dispatch, GPU painting and display presentation are excluded. These are handler timings, not end-to-end pointer/frame latency or a before/after comparison.
+
+| Box | Moving total (ms) | Median (us) | p95 (us) | p99 (us) | Identical-position total (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Empty | 67.5093 | 1.5 | 8.8 | 54.0 | 1.0460 |
+| Multiline, 58 UTF-16 units | 51.6608 | 1.6 | 8.3 | 23.1 | 1.0504 |
+| 16,384 UTF-16 units | 45.8910 | 1.5 | 5.2 | 17.5 | 0.9997 |
+
+Each case recorded **zero layout rebuilds, zero toolbar mutations, zero text notifications and zero selection notifications** during dragging. The moving pass emitted 19,999 geometry/layout notifications (its first sample matched the original bounds); the identical-position pass emitted none. Identical-position p95 and p99 were 0.1 us in all cases; sub-resolution median readings rounded to zero.
+
+### Interactive and hardware checks pending
+
+Computer Use could not initialize. A reset and initialization retry failed with `node_repl kernel exited unexpectedly`; its diagnostic was **`windows sandbox failed: helper_unknown_error: setup refresh had errors`**. No interaction with the rebuilt app or affected display was performed. Pending:
+
+- Click/drag creation, border movement, all eight resize handles, and color/font-size dialogs on the affected display.
+- No toolbar flashing, disappearing labels or accumulated pointer lag with empty, multiline and 16,384-character boxes, including sustained movement and height/width resizing.
+- Actual IME candidate positioning during movement/reflow and live composition/selection/focus behavior.
+- Physical cross-monitor, negative-origin, mixed-DPI and SDR/HDR behavior, plus visible preview/export comparisons.
+
+## Paint-style inline text — 2026-09-17
+
+Release build completed successfully with MSVC x64. The final `ctest --preset release` run passed: **37 checks passed, 0 failed** in `ScreenshotToolTests` (one CTest executable). `git diff --check` passed. The rebuilt executable is `build/Release/ScreenshotTool.exe`.
+
+The inline editor replaces the floating window and native EDIT control. Ten new regression checks cover:
+
+1. Default/clipped box widths, directional selection replacement, deletion, local undo/redo branching, and empty commit.
+2. UTF-16 surrogate pairs, combining clusters, atomic WM_CHAR surrogate input, and the 16,384-code-unit limit.
+3. Word selection, Ctrl/Shift navigation, vertical movement, and wrapped-line trailing caret affinity.
+4. Whole-box size/color changes, preserved selection/caret, format undo, and no-op formatting.
+5. Eight handle hit targets, border movement, negative coordinates, width reflow, height growth, content preservation, and one undo step per resize gesture.
+6. Composition cancellation/undo, commit/discard, complete-box annotation history, and fresh state for repeated boxes.
+7. Exact floating-point document-renderer pixels before/after commit and between preview/export, crop clipping, split-monitor rendering, HDR white scaling, and legacy unwrapped text. Editing decorations are excluded from these document-renderer comparisons.
+8. ITextStoreACP read/write locks, asynchronous upgrades, reentrant synchronous rejection, reverse selection, replacement ranges, sink notifications, and actual caret screen extents at negative coordinates.
+9. A TSF composition that starts after its initial service insertion; cancel restores the pre-insertion state without adding a duplicate undo step.
+10. Real TSF document/context activation on a hidden HWND, composition cleanup, and repeated teardown.
+
+The existing capture, geometry, export, WARP graphics, FP16 presentation, codec, and file-transaction checks also pass. TSF protocol tests use a test sink; activation tests use Windows TSF itself. They do not establish compatibility with a live language IME.
+
+### Interactive validation pending
+
+The requested Windows 11 Paint comparison could not start. Computer Use's Node runtime exited during initialization on both the initial attempt and the retry after reset, with **"windows sandbox failed: helper_unknown_error: setup refresh had errors"**. No Paint or ScreenshotTool interaction was performed for this change. The following remain pending:
+
+- Side-by-side Paint comparison: click/drag creation, caret placement, drag selection, double-click words, all handles, border movement, and typing at wrapped line ends.
+- Actual keyboard and clipboard routing, including cut/copy/paste, AltGr, navigation, local undo/redo, and repeated annotations.
+- Opening, choosing, and canceling Color/Text size UI while preserving caret and forward/reverse selections.
+- Live Japanese/Chinese/Korean IME input, composition underlining, candidate-window placement at the rendered caret, and first-Escape composition cancellation.
+- Canvas click-away, Ctrl+Enter, tool changes, and exports committing exactly once; Escape discarding; no reopening committed boxes.
+- Visible overlay/export comparisons with editing decorations excluded, and session cancellation while composing or dragging.
+- Physical mixed-DPI and SDR/HDR monitors, negative origins, cross-monitor movement/resize, crop edges, and per-monitor candidate placement. Synthetic geometry/pixel tests do not replace these hardware checks.
+
 ## Environment
 
 - Date: 2026-09-16.
@@ -13,7 +89,7 @@
 
 ## Automated checks
 
-Final verification: **27 checks passed, 0 failed** in the Release CTest run. The hidden swap-chain test caught and verified a fix to the D2D surface binding flags before the initial packaging. The black-capture fix adds eight deterministic acquisition checks.
+Baseline verification (before inline text): **27 checks passed, 0 failed** in the Release CTest run. The hidden swap-chain test caught and verified a fix to the D2D surface binding flags before the initial packaging. The black-capture fix adds eight deterministic acquisition checks.
 
 The CTest executable covers:
 
@@ -72,6 +148,19 @@ Interactive verification was blocked when automatic approval review rejected lau
 - First completed region selects Pen and the next drag draws; empty or interrupted initial drags leave the transition pending.
 - Later crop moves, resizes, and replacements preserve the selected tool; a new capture session selects Pen after its first completed region again.
 - Existing export, undo/redo, and Tab/Shift+Tab shortcuts.
+
+## Live text preview
+
+The 2026-09-16 text preview fix built successfully in Release. The fresh CTest run reported **27 checks passed, 0 failed**. These existing checks cover annotation rendering and export, but do not exercise the floating editor or its input notifications.
+
+The native multiline editor now uses an owned tool window above the graphics overlay. Every EN_CHANGE updates the draft annotation and invalidates all monitor overlays; commit adds one history entry, while discard removes the draft. Editor placement prefers the right or left of the selection and otherwise uses the work-area corner farthest from the text anchor.
+
+Interactive verification could not start: the Computer Use Node runtime exited during initialization, and its retry reported **"windows sandbox failed: helper_unknown_error: setup refresh had errors"**. The following checks remain pending:
+
+- Live text appears before focus changes, using the selected color and size, and tracks typing, paste, deletion, and newlines.
+- The floating editor, caret, and text selection remain visible across overlay repaints; native clipboard, undo, and IME behavior is retained.
+- Ctrl+Enter and click-away commit exactly once; Escape discards; empty text creates no history entry; annotation undo/redo and copy/save use only committed text.
+- Work-area placement, crop clipping, negative monitor origins, mixed DPI, and SDR/HDR visual consistency.
 
 ## Interactive checks remaining
 

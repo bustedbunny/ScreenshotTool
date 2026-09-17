@@ -7,7 +7,9 @@
 | `core.hpp`, `core.cpp` | Physical-pixel geometry, rotation mapping, immutable desktop data, annotation history, keyboard gate, state transitions, naming, export transaction orchestration |
 | `capture.hpp`, `capture.cpp` | DXGI adapter/output enumeration, `DuplicateOutput1`, CPU staging, scRGB conversion, display bounds, rotation, DPI, HDR mode, SDR white metadata |
 | `graphics.hpp`, `graphics.cpp` | Direct3D/Direct2D device resources, FP16 flip-model scRGB swap chains, one annotation renderer for preview and export, tone mapping, pixel readback |
-| `overlay.hpp`, `overlay.cpp` | Monitor windows, selection dragging/resizing, annotation gestures, native text editor, dark toolbar, shortcuts and display-change validation |
+| `overlay.hpp`, `overlay.cpp` | Monitor windows, selection dragging/resizing, annotation gestures, inline text input routing, dark toolbar, shortcuts and display-change validation |
+| `inline_text.hpp`, `inline_text.cpp` | Editable text state, DirectWrite layout and hit testing, Unicode cluster navigation, selection, local history, composition snapshots, box geometry |
+| `text_store.hpp`, `text_store.cpp` | STA ITextStoreACP, TSF lock protocol, input routing, composition lifecycle, screen-space caret extents |
 | `export.hpp`, `export.cpp` | PNG/JPEG XR encoding, clipboard ownership, native Save As, collision-safe quick saves, staged writes |
 | `settings.hpp`, `settings.cpp` | Per-user settings and optional sign-in registry entry |
 | `app.hpp`, `app.cpp`, `main.cpp` | Single-instance mutex, tray, low-level keyboard hook, message loop, worker lifetimes and session state |
@@ -27,6 +29,24 @@ The process manifest requests Per Monitor V2 DPI awareness. Desktop bounds, curs
 The document is an ordered sequence of annotation values with a history cursor. Undo/redo moves the cursor; new annotations discard the redo tail. Moving/resizing the selection changes only the clip rectangle. It never transforms the annotation document. The same Direct2D paths, shapes, arrow geometry, grayscale-antialiased DirectWrite text, and censor logic render to previews and both export destinations. Opaque censors use aliased integer bounds. Pixelation reads the already-composited pixels and replaces them with block averages, so underlying image and earlier drawing are flattened.
 
 Pixelation grids are anchored to their annotation rectangle. Edge blocks average available target pixels, so a block cut by a crop or a monitor boundary can have a slightly different average in the preview and export. Opaque black covers have no such dependency.
+
+## Inline text
+
+Text annotations optionally carry desktop-pixel box bounds. Unbounded annotations keep the legacy no-wrap layout. `textLayout` creates the Segoe UI DirectWrite layout used for measurement, hit testing and rendering. The active controller passes its layout instance to every monitor preview; commit/export reconstruct the same layout from the annotation value. Width wraps text and measured height grows the box; font size never scales with box geometry. Crop clipping and per-monitor white scaling stay in the shared document renderer.
+
+`InlineText` owns UTF-16 text, directional selection, wrapped-line caret affinity, cluster navigation and local snapshots. A resize/move gesture and an IME composition each form one local undo step. Composition cancellation restores the pre-composition state. Only a nonempty committed annotation enters document history; the committed document has no text-edit hit targets. Formatting applies to the complete active annotation and preserves selection. Clipboard text normalizes Windows line endings at the boundary.
+
+The overlay routes active-text hits before drawing/crop gestures. Color and size commands retain the active box and return keyboard focus after their modal UI; other commands commit explicitly. Generic focus loss does not commit. `TextStore` implements ITextStoreACP and ITfContextOwnerCompositionSink, activates a document/context, routes keys through ITfKeystrokeMgr, enforces read/write locks, queues asynchronous lock upgrades, and reports application changes to the advised sink. DirectWrite ranges and the actual caret supply clipped desktop screen extents for IME candidate placement. Completion tears down the context, restores prior TSF document focus, deactivates input services, releases capture, and kills the caret timer.
+
+Selection shading, composition underlining, caret, dashed border and eight handles are drawn only in the presentation layer, after document rendering. They never enter exports. No native EDIT child or floating editor window is created.
+
+Active layouts, cluster boundaries, content height and glyph overhang are cached. Only text, width and font-size changes rebuild them. Translation, height, color and selection updates retain the layout; bounds are normalized against cached content height before the no-op check. Internal change flags distinguish content, selection, geometry, formatting and composition. Geometry notifications update TSF layout/caret extents without copying old text, changing settings, resetting the caret timer or reporting a selection change. Undo snapshots remain at gesture boundaries.
+
+Each text update invalidates only monitor windows intersecting its old or new visual extent, clipped to the crop. The extent includes overflowing glyphs, caret, underlines and handle strokes. Canvas invalidation never refreshes the toolbar. Button labels, enabled states, tool selection and swatches are compared with cached values; the status line has its own invalidation. The toolbar stays visible during text gestures and uses `WS_CLIPCHILDREN`; background painting uses the paint rectangle, preserving child-button areas. Direct2D brushes and rounded/dashed stroke styles belong to the graphics context and are reused across frames.
+
+Toolbar clipping follows [Win32 window styles](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-styles). Text visual bounds include [DirectWrite overhang metrics](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritetextlayout-getoverhangmetrics).
+
+References: [DirectWrite layout and hit testing](https://learn.microsoft.com/en-us/windows/win32/directwrite/getting-started-with-directwrite), [TSF text stores](https://learn.microsoft.com/en-us/windows/win32/tsf/text-stores).
 
 ## Color
 

@@ -12,6 +12,7 @@
 | `text_store.hpp`, `text_store.cpp` | STA ITextStoreACP, TSF lock protocol, input routing, composition lifecycle, screen-space caret extents |
 | `export.hpp`, `export.cpp` | PNG/JPEG XR encoding, clipboard ownership, native Save As, collision-safe quick saves, staged writes |
 | `settings.hpp`, `settings.cpp` | Per-user settings and optional sign-in registry entry |
+| `update.hpp`, `update.cpp` | GitHub release metadata, cancellable HTTPS, executable verification, native helper handoff and recoverable replacement |
 | `app.hpp`, `app.cpp`, `main.cpp` | Single-instance mutex, tray, low-level keyboard hook, message loop, worker lifetimes and session state |
 
 ## Sessions and threads
@@ -49,6 +50,16 @@ Each text update invalidates only monitor windows intersecting its old or new vi
 Toolbar clipping follows [Win32 window styles](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-styles). Text visual bounds include [DirectWrite overhang metrics](https://learn.microsoft.com/en-us/windows/win32/api/dwrite/nf-dwrite-idwritetextlayout-getoverhangmetrics).
 
 References: [DirectWrite layout and hit testing](https://learn.microsoft.com/en-us/windows/win32/directwrite/getting-started-with-directwrite), [TSF text stores](https://learn.microsoft.com/en-us/windows/win32/tsf/text-stores).
+
+## Release updates
+
+Automatic checks run once per primary startup. A separate `std::jthread` posts typed results to the controller, independent of capture/export generations. WinHTTP asynchronous operations have a two-minute request deadline, ten-second transport timeouts, a 1 MiB metadata limit and a 64 MiB executable limit. Shutdown cancels the outstanding request; callback storage remains alive through `HANDLE_CLOSING`. HTTPS redirects cannot downgrade to HTTP. Windows.Data.Json parses the stable-release response; no token or screenshot data is sent.
+
+Release tags compare numerically after normalizing optional `v` and two-part versions. The uploaded `ScreenshotTool.exe` must provide GitHub's SHA-256 digest and declared size. BCrypt, PE headers and Windows version resources verify downloaded bytes before installation and again in the helper. The CMake project version generates application constants, executable version information, manifest identity and ZIP naming.
+
+The UI defers update prompts and installation until the session is idle. Once the user confirms download and restart, captures can proceed during download. Same-directory replacement preparation and permission checks finish before handoff. A temporary copy of the existing app handles `--apply-update` before taking the single-instance mutex. Only explicitly listed process/event handles are inherited. The helper validates its target against the parent process image, acknowledges readiness, waits for parent termination and uses `ReplaceFileW` with a backup. Restart requires a readiness event signaled after normal app initialization. Failed restart restores the previous executable; an unrecoverable restore leaves the backup for manual recovery. Successful startup waits for the helper to finish and removes its uniquely named staging directory. Reported update failures do not close screenshot sessions.
+
+This transaction handles ordinary errors, rather than guaranteeing recovery across power loss or forced process termination. Those interruptions can leave staging files or a backup. Settings and screenshots are stored outside the executable and do not participate in replacement.
 
 ## Color
 

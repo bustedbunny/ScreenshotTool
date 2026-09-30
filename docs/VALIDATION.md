@@ -1,5 +1,33 @@
 # Validation record
 
+## GitHub release auto-updates - 2026-09-30
+
+Release builds succeeded with MSVC x64 in `build/update-validation`; the original `build/Release/ScreenshotTool.exe` was locked by a running instance and was left running. The fresh CTest run passed **64 checks, 0 failed** across `ScreenshotToolTests` (48) and `ScreenshotToolUpdateTests` (16), in 5.47 seconds. The generated executable version is **1.1.0**. A read-only live probe through the new WinHTTP client successfully queried GitHub and reported the app current against the existing `1.0` release. Import inspection confirmed only Windows system DLL dependencies.
+
+Updater checks cover numeric version normalization/order, stable release/asset selection, malformed metadata and missing digests, HTTP failures/rate-limit backoff, cancellation, preference round trips, shell-free Windows argument quoting, downloaded size/hash/PE/version verification, protected folders, staging cleanup, locked targets, backup preservation, replacement and rollback. A real disposable-process test prepares an update while its target is running, waits for that parent to exit, replaces it, acknowledges startup from the new executable and removes the helper. Its paths contain spaces and Japanese characters. No test updates the user's running app or sign-in registry entry.
+
+Portable ZIP creation succeeded with CPack. The workflow's three multiline PowerShell blocks passed syntax parsing; its version-validation block accepted `v1.1.0` and rejected `v1.2.0`. Workflow publication is intentionally unexecuted: no tag, draft or published release was created. GitHub-hosted execution remains to be verified on the first tagged release.
+
+Reproduction commands, with the Visual Studio bundled CMake tools if they are absent from PATH:
+
+```powershell
+cmake --preset windows-x64 -B build/update-validation
+cmake --build build/update-validation --config Release --parallel
+ctest --test-dir build/update-validation -C Release --output-on-failure
+./build/update-validation/Release/ScreenshotToolUpdateTests.exe --github-probe
+cmake --build build/update-validation --config Release --target PACKAGE
+```
+
+### Interactive checks pending
+
+Native desktop controls are unavailable in the current Computer Use surface, so native tray/settings visuals and actual screenshot-session interaction were not exercised.
+
+- Confirm the Settings dialog shows version 1.1.0, preserves sign-in behavior and drawing settings, and persists the automatic-check toggle.
+- Check manually against a newer test release; click the tray notification, view its release notes, cancel, then confirm download and restart.
+- Check during capture/editing/export and download during a screenshot session; confirm prompts and replacement wait until idle and capture remains responsive.
+- Verify an incompatible release offers manual installation, and an unwritable portable location reports failure while the current app remains usable.
+- On the first real tagged release, confirm Actions leaves failed uploads in draft and publishes both verified assets only after successful build and tests.
+
 ## Crop editing with every tool and desktop-wide drawing - 2026-09-30
 
 Release build completed successfully with MSVC x64 using `cmake --build --preset release --parallel`. The fresh `ctest --preset release --output-on-failure` run passed: **48 checks passed, 0 failed** in `ScreenshotToolTests` (one CTest executable, 0.90 seconds). The rebuilt executable is `build/Release/ScreenshotTool.exe`.

@@ -1,0 +1,5 @@
+#pragma once
+#include <string_view>
+namespace shot {
+inline constexpr std::wstring_view AppVersion = L"@PROJECT_VERSION@";
+}

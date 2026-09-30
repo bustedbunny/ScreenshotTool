@@ -1,0 +1,42 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include "@CMAKE_CURRENT_SOURCE_DIR@/resources/resource.h"
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904b0"
+  BEGIN
+   VALUE "FileDescription", "ScreenshotTool"
+   VALUE "FileVersion", "@PROJECT_VERSION@"
+   VALUE "ProductName", "ScreenshotTool"
+   VALUE "ProductVersion", "@PROJECT_VERSION@"
+   VALUE "OriginalFilename", "ScreenshotTool.exe"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END
+
+IDD_SETTINGS DIALOGEX 0, 0, 330, 193
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ScreenshotTool settings"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "ScreenshotTool @PROJECT_VERSION@ — Capture with Print Screen", -1, 12, 10, 306, 14
+    LTEXT "Drag to select, then annotate or export.\nQuick saves: Pictures \\ ScreenshotTool\nHDR selections save an SDR PNG and a lossless HDR JPEG XR.", -1, 12, 29, 306, 34
+    LTEXT "If Windows also opens Snipping Tool, turn off 'Use the Print Screen key to open screen capture' in Windows Settings > Accessibility > Keyboard.", -1, 12, 68, 306, 30
+    CONTROL "Automatically check for updates at startup", IDC_AUTO_UPDATES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 105, 306, 14
+    CONTROL "Launch ScreenshotTool when I sign in", IDC_SIGN_IN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 124, 306, 14
+    LTEXT "Sign-in uses this executable's location. If you move it, disable and enable sign-in again.", -1, 12, 142, 306, 24
+    DEFPUSHBUTTON "OK", IDOK, 211, 172, 50, 14
+    PUSHBUTTON "Cancel", IDCANCEL, 268, 172, 50, 14
+END

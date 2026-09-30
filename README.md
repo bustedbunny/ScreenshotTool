@@ -55,9 +55,19 @@ JPEG XR retains capture precision and HDR values above SDR white. SDR portions o
 
 ### Tray and settings
 
-Right-click the tray icon for **Capture**, **Open screenshots folder**, **Settings**, or **Exit**. Launch at sign-in is off by default. Enabling it writes only the current user's Run registry entry. If you move the executable, disable and re-enable that option to update its path.
+Right-click the tray icon for **Capture**, **Open screenshots folder**, **Settings**, **Check for updates**, **View GitHub releases**, or **Exit**. **Install update…** appears when a compatible release is available. Launch at sign-in is off by default. Enabling it writes only the current user's Run registry entry. If you move the executable, disable and re-enable that option to update its path.
 
-Color, stroke width, and text size persist in `%LOCALAPPDATA%\ScreenshotTool\settings.ini`. The censor always starts in black-cover mode for each session. Screenshot pixels remain in memory until export. There is no network access or telemetry in the app.
+Color, stroke width, text size, and the automatic update preference persist in `%LOCALAPPDATA%\ScreenshotTool\settings.ini`. The censor always starts in black-cover mode for each session. Screenshot pixels remain in memory until export. Network requests are limited to GitHub release checks and user-confirmed update downloads; there is no telemetry or screenshot upload.
+
+### Updates
+
+Automatic checks are enabled by default and run once on each primary app startup. Disable **Automatically check for updates at startup** in Settings if desired; **Check for updates** remains available. There are no periodic checks. Existing versions without this feature need one manual upgrade first.
+
+Checks use the latest published stable release of [bustedbunny/ScreenshotTool](https://github.com/bustedbunny/ScreenshotTool/releases/latest). Drafts, prereleases, and equal or older numeric versions are ignored. Automatic checks stay quiet when current or offline; manual checks report the result. GitHub rate limits are respected for the running session.
+
+Click the available-update tray notification or **Install update…**, then choose **Download and restart**. The app verifies the release asset's size, SHA-256 digest, Windows x64 format, application identity, and embedded version. Capture remains available during download; installation waits for an active screenshot session to finish. Update dialogs also wait until the app is idle.
+
+The update replaces only the executable at its current path, preserving settings, screenshots, and the sign-in entry. A temporary native helper waits for the app to exit, keeps a backup during replacement, and confirms the new app starts. Reported replacement or startup failures recover the old executable where possible. Administrator elevation is never requested. If the portable folder is protected or another program locks the executable, use **View GitHub releases** to download manually or move the app to a writable folder. ZIP documentation is refreshed by downloading the portable ZIP, rather than by executable updates.
 
 Command-line entry point: `ScreenshotTool.exe --capture`.
 
@@ -87,6 +97,12 @@ cmake --install build --config Release --prefix dist
 ```
 
 The build uses `/MT` in Release and `/MTd` in Debug. Only Windows system DLLs are dynamically imported. To create a ZIP package, run `cpack --config build/CPackConfig.cmake -C Release`.
+
+### Publishing releases
+
+Set the version in `CMakeLists.txt`, commit it on the default branch, and push a matching `vX.Y.Z` tag (for example, `v1.1.0`). CMake generates the application version, executable resources, manifest, and ZIP name from that value. The **Release** GitHub Actions workflow builds and tests on Windows 2022, uploads `ScreenshotTool.exe` and `ScreenshotTool-X.Y.Z-windows-x64.zip` to a draft release, verifies both assets, then publishes. An upload failure leaves the draft unpublished; rerunning can finish a draft but refuses to modify an already published release.
+
+The updater requires the uploaded asset to be named exactly `ScreenshotTool.exe`, with GitHub's `sha256:` asset digest. Numeric two-part tags such as the original `1.0` release remain readable, but workflow-created releases use three-part `vX.Y.Z` tags. No access token is stored in the application; the workflow uses its repository-scoped `GITHUB_TOKEN`.
 
 Optional hardware probe, run from the interactive user's desktop:
 

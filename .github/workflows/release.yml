@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') { throw 'Release tags must use vX.Y.Z.' }
+          $source = Get-Content -LiteralPath CMakeLists.txt -Raw
+          if ($source -notmatch 'project\(ScreenshotTool VERSION ([0-9]+\.[0-9]+\.[0-9]+) ') { throw 'Project version was not found.' }
+          $version = $Matches[1]
+          if ($tag -cne "v$version") { throw "Tag $tag does not match project version $version." }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Build and test
+        shell: pwsh
+        run: ./build.ps1
+      - name: Package and validate assets
+        shell: pwsh
+        run: |
+          cpack --config build/CPackConfig.cmake -C Release -B release-assets
+          if ($LASTEXITCODE -ne 0) { throw 'ZIP packaging failed.' }
+          Copy-Item -LiteralPath dist/ScreenshotTool.exe -Destination release-assets/ScreenshotTool.exe
+          $file = Get-Item -LiteralPath release-assets/ScreenshotTool.exe
+          if ($file.VersionInfo.FileVersion -cne $env:RELEASE_VERSION) { throw 'Executable version does not match the release.' }
+          $archive = "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip"
+          if (-not (Test-Path -LiteralPath $archive)) { throw 'Portable ZIP asset is missing.' }
+      - name: Upload assets to draft and publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $repo = $env:GITHUB_REPOSITORY
+          $existing = gh release view $tag --repo $repo --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($existing | ConvertFrom-Json).isDraft) { throw 'Refusing to alter an already published release.' }
+          } else {
+            gh release create $tag --repo $repo --verify-tag --draft --title $tag --generate-notes
+            if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
+          }
+          gh release upload $tag --repo $repo --clobber release-assets/ScreenshotTool.exe "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed; the release remains a draft.' }
+          $metadata = gh api "repos/$repo/releases/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset verification failed.' }
+          $assets = ($metadata | ConvertFrom-Json).assets
+          foreach ($name in @('ScreenshotTool.exe', "ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip")) {
+            $asset = $assets | Where-Object { $_.name -ceq $name -and $_.size -gt 0 }
+            if (-not $asset) { throw "Uploaded asset $name is missing or empty." }
+            $hash = (Get-FileHash -LiteralPath "release-assets/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.digest -cne "sha256:$hash") { throw "Uploaded asset $name has no matching SHA-256 digest." }
+          }
+          gh release edit $tag --repo $repo --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

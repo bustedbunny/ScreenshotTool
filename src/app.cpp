@@ -1,11 +1,14 @@
 #include "app.hpp"
 #include <shellapi.h>
 #include <future>
+#include <commctrl.h>
 
 namespace shot {
 namespace {
 constexpr UINT TrayMessage=WM_APP+2,CapturedMessage=WM_APP+3,ExportedMessage=WM_APP+4,FailureMessage=WM_APP+5,ActionMessage=WM_APP+6;
-constexpr UINT CaptureId=100,FolderId=101,SettingsId=102,ExitId=103;
+constexpr UINT CheckUpdatesMessage=WM_APP+7,UpdateCheckedMessage=WM_APP+8,UpdateDownloadedMessage=WM_APP+9,PendingUpdateMessage=WM_APP+10;
+constexpr UINT CaptureId=100,FolderId=101,SettingsId=102,ExitId=103,CheckUpdatesId=104,InstallUpdateId=105,ReleasePageId=106;
+struct DownloadResult {std::optional<PreparedUpdate> update;std::wstring error;};
 struct CaptureResult {unsigned generation{};std::shared_ptr<const DesktopImage> desktop;std::wstring error;};
 struct ExportResult {unsigned generation{};SessionAction action{};EncodedImage image;std::vector<std::filesystem::path> paths;std::wstring error;};
 HICON makeIcon() {
@@ -48,15 +51,18 @@ App::App(HINSTANCE instance):instance_(instance),settings_(Settings::load()) {
 }
 App::~App() {
     exiting_=true;worker_.request_stop();if(worker_.joinable())worker_.join();session_.reset();
+    updateWorker_.request_stop();if(updateWorker_.joinable())updateWorker_.join();
     if(keyboardThreadId_)PostThreadMessageW(keyboardThreadId_,WM_QUIT,0,0);
     if(keyboardThread_.joinable())keyboardThread_.join();
     if(trayAdded_) {NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;Shell_NotifyIconW(NIM_DELETE,&data);}
     if(window_) {
         MSG message{};
-        while(PeekMessageW(&message,window_,CapturedMessage,ActionMessage,PM_REMOVE)) {
+        while(PeekMessageW(&message,window_,CapturedMessage,PendingUpdateMessage,PM_REMOVE)) {
             if(message.message==CapturedMessage)delete reinterpret_cast<CaptureResult*>(message.lParam);
             if(message.message==ExportedMessage)delete reinterpret_cast<ExportResult*>(message.lParam);
             if(message.message==FailureMessage)delete reinterpret_cast<std::wstring*>(message.lParam);
+            if(message.message==UpdateCheckedMessage)delete reinterpret_cast<UpdateCheckResult*>(message.lParam);
+            if(message.message==UpdateDownloadedMessage)delete reinterpret_cast<DownloadResult*>(message.lParam);
         }
         DestroyWindow(window_);
     }
@@ -65,6 +71,7 @@ App::~App() {
 int App::run(bool immediate) {
     if(immediate)PostMessageW(window_,CaptureMessage,0,0);
     else notify(L"Ready. Press Print Screen to freeze your displays and select a region.");
+    if(settings_.automaticUpdates)PostMessageW(window_,CheckUpdatesMessage,0,0);
     MSG msg{};int result;
     while((result=GetMessageW(&msg,nullptr,0,0))>0) {
         if(session_ && session_->translate(msg))continue;
@@ -101,14 +108,26 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
         std::unique_ptr<std::wstring> detail(reinterpret_cast<std::wstring*>(lp));endSession();error(*detail);return 0;
     }
     case ActionMessage:action(static_cast<SessionAction>(wp));return 0;
+    case CheckUpdatesMessage:checkUpdates(false);return 0;
+    case UpdateCheckedMessage:updateChecked(lp);return 0;
+    case UpdateDownloadedMessage:updateDownloaded(lp);return 0;
+    case PendingUpdateMessage:processPendingUpdate();return 0;
     case TrayMessage:
         if(LOWORD(lp)==WM_CONTEXTMENU || LOWORD(lp)==WM_RBUTTONUP)trayMenu();
+        else if(LOWORD(lp)==NIN_BALLOONUSERCLICK && updateBalloon_){pendingUpdatePrompt_=true;processPendingUpdate();}
         else if(LOWORD(lp)==NIN_SELECT || LOWORD(lp)==WM_LBUTTONDBLCLK)capture();return 0;
     case WM_COMMAND:
         switch(LOWORD(wp)) {
         case CaptureId:capture();break;
         case FolderId: {auto folder=picturesDirectory();std::filesystem::create_directories(folder);auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL));if(result<=32)throw std::runtime_error("Could not open the screenshots folder.");break;}
-        case SettingsId:if(state_.get()==State::Idle)Settings::show(window_);break;
+        case SettingsId:if(state_.get()==State::Idle && !dialogOpen_ && !updateHandoff_) {
+            dialogOpen_=true;
+            try{settings_.show(window_);}catch(...){dialogOpen_=false;throw;}
+            dialogOpen_=false;PostMessageW(window_,PendingUpdateMessage,0,0);
+        }break;
+        case CheckUpdatesId:checkUpdates(true);break;
+        case InstallUpdateId:pendingUpdatePrompt_=true;processPendingUpdate();break;
+        case ReleasePageId:openReleasePage();break;
         case ExitId:exiting_=true;endSession();PostQuitMessage(0);break;
         }return 0;
     case WM_TIMER:
@@ -122,6 +141,7 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
     return DefWindowProcW(window_,message,wp,lp);
 }
 void App::capture() {
+    if(dialogOpen_ || updateHandoff_ || exiting_)return;
     if(!state_.beginCapture())return;
     const unsigned generation=++generation_;const HWND target=window_;
     worker_=std::jthread([generation,target](std::stop_token stop) {
@@ -132,7 +152,7 @@ void App::capture() {
 }
 void App::captureFinished(LPARAM raw) {
     std::unique_ptr<CaptureResult> result(reinterpret_cast<CaptureResult*>(raw));if(result->generation!=generation_)return;
-    if(!result->error.empty()){state_.reset();error(result->error);return;}
+    if(!result->error.empty()){state_.reset();error(result->error);PostMessageW(window_,PendingUpdateMessage,0,0);return;}
     desktop_=std::move(result->desktop);
     try {
         session_=std::make_unique<OverlaySession>(instance_,desktop_,settings_,[this](SessionAction a){PostMessageW(window_,ActionMessage,static_cast<WPARAM>(a),0);},[this](std::wstring text){auto value=std::make_unique<std::wstring>(std::move(text));if(PostMessageW(window_,FailureMessage,0,reinterpret_cast<LPARAM>(value.get())))value.release();});
@@ -174,6 +194,7 @@ void App::exportFinished(LPARAM raw) {
 void App::endSession() {
     ++generation_;worker_.request_stop();session_.reset();desktop_.reset();state_.reset();
     if(!exiting_)try{settings_.save();}catch(const std::exception& e){notify(widen(e.what()),true);}
+    if(!exiting_)PostMessageW(window_,PendingUpdateMessage,0,0);
 }
 void App::addTray() {
     NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;data.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;data.uCallbackMessage=TrayMessage;
@@ -182,11 +203,87 @@ void App::addTray() {
 }
 void App::trayMenu() {
     HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,CaptureId,L"Capture\tPrint Screen");AppendMenuW(menu,MF_STRING,FolderId,L"Open screenshots folder");AppendMenuW(menu,MF_STRING|(state_.get()!=State::Idle?MF_GRAYED:0),SettingsId,L"Settings");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,ExitId,L"Exit");
+    InsertMenuW(menu,3,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),CheckUpdatesId,updateBusy_?L"Checking / downloading update…":L"Check for updates");
+    const bool installAvailable=updateRelease_ && updateCompatible_;
+    if(installAvailable)InsertMenuW(menu,4,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),InstallUpdateId,L"Install update…");
+    InsertMenuW(menu,installAvailable?5:4,MF_BYPOSITION|MF_STRING,ReleasePageId,L"View GitHub releases");
     POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);TrackPopupMenu(menu,TPM_RIGHTBUTTON,point.x,point.y,0,window_,nullptr);DestroyMenu(menu);PostMessageW(window_,WM_NULL,0,0);
 }
 void App::notify(const std::wstring& text,bool error) {
+    updateBalloon_=false;
     NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;data.uFlags=NIF_INFO;data.dwInfoFlags=error?NIIF_ERROR:NIIF_INFO;
     wcscpy_s(data.szInfoTitle,L"ScreenshotTool");wcsncpy_s(data.szInfo,text.c_str(),_TRUNCATE);Shell_NotifyIconW(NIM_MODIFY,&data);
+}
+void App::checkUpdates(bool manual) {
+    if(exiting_ || updateBusy_)return;
+    if(std::chrono::steady_clock::now()<updateRetryAfter_){if(manual)notify(L"GitHub has limited update requests. Try again later.",true);return;}
+    updateBusy_=true;manualUpdateCheck_=manual;const auto target=window_;
+    updateWorker_=std::jthread([target](std::stop_token stop) {
+        auto result=std::make_unique<UpdateCheckResult>(UpdateService::check(stop));
+        if(PostMessageW(target,UpdateCheckedMessage,0,reinterpret_cast<LPARAM>(result.get())))result.release();
+    });
+}
+void App::updateChecked(LPARAM raw) {
+    std::unique_ptr<UpdateCheckResult> result(reinterpret_cast<UpdateCheckResult*>(raw));updateBusy_=false;if(exiting_)return;
+    if(result->status==UpdateStatus::RateLimited)updateRetryAfter_=std::chrono::steady_clock::now()+std::chrono::seconds(result->retryAfterSeconds);
+    if(result->status==UpdateStatus::Available) {
+        updateCompatible_=true;updateRelease_=std::move(result->release);pendingUpdateNotification_=true;processPendingUpdate();
+    }else if(result->status==UpdateStatus::Incompatible) {
+        updateCompatible_=false;updateRelease_=std::move(result->release);pendingUpdateNotification_=true;processPendingUpdate();
+    }else {
+        if(result->status==UpdateStatus::Current || result->status==UpdateStatus::NoRelease){updateRelease_.reset();pendingUpdateNotification_=pendingUpdatePrompt_=false;}
+        if(manualUpdateCheck_ && result->status!=UpdateStatus::Canceled)notify(result->message,result->status==UpdateStatus::Failed || result->status==UpdateStatus::RateLimited);
+    }
+}
+void App::processPendingUpdate() {
+    if(exiting_ || dialogOpen_ || updateHandoff_ || state_.get()!=State::Idle)return;
+    if(preparedUpdate_){installPreparedUpdate();return;}
+    if(pendingUpdatePrompt_ && updateRelease_ && !updateBusy_){pendingUpdatePrompt_=false;promptUpdate();return;}
+    if(pendingUpdateNotification_ && updateRelease_) {
+        pendingUpdateNotification_=false;
+        notify(L"ScreenshotTool "+updateRelease_->version.text()+(updateCompatible_?L" is available. Click to install and restart.":L" is available for manual installation. Click to open its GitHub release."));updateBalloon_=true;
+    }
+}
+void App::openReleasePage() {
+    const auto url=updateRelease_?updateRelease_->releaseUrl:L"https://github.com/bustedbunny/ScreenshotTool/releases/latest";
+    const auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(window_,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL));
+    if(result<=32)throw std::runtime_error("Could not open the GitHub release page.");
+}
+void App::promptUpdate() {
+    if(!updateRelease_)return;
+    if(!updateCompatible_){openReleasePage();return;}
+    dialogOpen_=true;
+    struct Reset {bool& flag;~Reset(){flag=false;}}reset{dialogOpen_};
+    const auto instruction=L"Install ScreenshotTool "+updateRelease_->version.text()+L"?";
+    TASKDIALOG_BUTTON buttons[]{{IDOK,L"Download and restart"},{ReleasePageId,L"View release notes"}};
+    TASKDIALOGCONFIG config{sizeof(config)};config.hwndParent=window_;config.pszWindowTitle=L"ScreenshotTool update";
+    config.pszMainInstruction=instruction.c_str();config.pszContent=L"The verified update will replace this executable and restart ScreenshotTool. Your settings will be preserved.\n\nIf you start a screenshot while downloading, installation waits until you finish.";
+    config.dwCommonButtons=TDCBF_CANCEL_BUTTON;config.cButtons=2;config.pButtons=buttons;config.nDefaultButton=IDOK;
+    config.dwFlags=TDF_SIZE_TO_CONTENT|TDF_ALLOW_DIALOG_CANCELLATION;int selected{};
+    check(TaskDialogIndirect(&config,&selected,nullptr,nullptr),"Confirm update");
+    if(selected==ReleasePageId){openReleasePage();return;}
+    if(selected!=IDOK)return;
+    settings_.save();const auto release=*updateRelease_;const auto path=UpdateService::executablePath();const auto target=window_;updateBusy_=true;
+    updateWorker_=std::jthread([release,path,target](std::stop_token stop) {
+        auto result=std::make_unique<DownloadResult>();
+        try{result->update=UpdateService::download(release,path,stop);}catch(const std::exception& error){result->error=widen(error.what());}
+        if(PostMessageW(target,UpdateDownloadedMessage,0,reinterpret_cast<LPARAM>(result.get())))result.release();
+    });
+    notify(L"Downloading and verifying the update. Screenshot capture remains available.");
+}
+void App::updateDownloaded(LPARAM raw) {
+    std::unique_ptr<DownloadResult> result(reinterpret_cast<DownloadResult*>(raw));updateBusy_=false;if(exiting_)return;
+    if(!result->error.empty()){notify(result->error+L" Open the GitHub release page from the tray to install manually.",true);return;}
+    preparedUpdate_=std::move(result->update);processPendingUpdate();
+}
+void App::installPreparedUpdate() {
+    if(!preparedUpdate_)return;updateHandoff_=true;
+    try {
+        settings_.save();UpdateService::launchHelper(*preparedUpdate_);preparedUpdate_.reset();
+        exiting_=true;endSession();PostQuitMessage(0);
+    }catch(const std::exception& error) {
+        updateHandoff_=false;preparedUpdate_.reset();notify(widen(error.what())+L" Open the GitHub release page to install manually.",true);
+    }
 }
 void App::error(const std::wstring& text) {MessageBoxW(session_?session_->owner():window_,text.c_str(),L"ScreenshotTool",MB_OK|MB_ICONERROR|MB_TOPMOST);}
 }

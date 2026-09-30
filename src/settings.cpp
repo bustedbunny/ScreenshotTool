@@ -3,6 +3,7 @@
 #include <shlobj.h>
 #include <commctrl.h>
 #include <fstream>
+#include "../resources/resource.h"
 
 namespace shot {
 namespace {
@@ -11,9 +12,30 @@ std::filesystem::path settingsPath() {
     std::filesystem::path path(raw);CoTaskMemFree(raw);return path/L"ScreenshotTool"/L"settings.ini";
 }
 constexpr auto runKey=L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+struct SettingsDialog {bool automatic{},signIn{};};
+INT_PTR CALLBACK settingsDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    if(message==WM_INITDIALOG) {
+        auto* state=reinterpret_cast<SettingsDialog*>(lp);SetWindowLongPtrW(window,DWLP_USER,lp);
+        CheckDlgButton(window,IDC_AUTO_UPDATES,state->automatic?BST_CHECKED:BST_UNCHECKED);
+        CheckDlgButton(window,IDC_SIGN_IN,state->signIn?BST_CHECKED:BST_UNCHECKED);return TRUE;
+    }
+    if(message==WM_COMMAND && (LOWORD(wp)==IDOK || LOWORD(wp)==IDCANCEL)) {
+        if(LOWORD(wp)==IDOK) {
+            auto* state=reinterpret_cast<SettingsDialog*>(GetWindowLongPtrW(window,DWLP_USER));
+            state->automatic=IsDlgButtonChecked(window,IDC_AUTO_UPDATES)==BST_CHECKED;
+            state->signIn=IsDlgButtonChecked(window,IDC_SIGN_IN)==BST_CHECKED;
+        }
+        EndDialog(window,LOWORD(wp));return TRUE;
+    }
+    if(message==WM_CLOSE){EndDialog(window,IDCANCEL);return TRUE;}
+    return FALSE;
+}
 }
 Settings Settings::load() {
-    Settings settings;std::ifstream file(settingsPath());std::string key;float value{};
+    std::ifstream file(settingsPath());return read(file);
+}
+Settings Settings::read(std::istream& file) {
+    Settings settings;std::string key;float value{};
     while(file>>key>>value) {
         if(!std::isfinite(value))continue;
         if(key=="stroke")settings.strokeWidth=std::clamp(value,1.f,24.f);
@@ -21,15 +43,19 @@ Settings Settings::load() {
         else if(key=="red")settings.color.r=std::clamp(value,0.f,1.f);
         else if(key=="green")settings.color.g=std::clamp(value,0.f,1.f);
         else if(key=="blue")settings.color.b=std::clamp(value,0.f,1.f);
+        else if(key=="updates")settings.automaticUpdates=value!=0;
     }
     return settings;
+}
+void Settings::write(std::ostream& stream) const {
+    stream<<"stroke "<<strokeWidth<<"\ntext "<<textSize<<"\nred "<<color.r<<"\ngreen "<<color.g<<"\nblue "<<color.b<<"\nupdates "<<(automaticUpdates?1:0)<<'\n';
 }
 void Settings::save() const {
     const auto path=settingsPath();std::filesystem::create_directories(path.parent_path());
     const auto temporary=path.parent_path()/(L"settings-"+uniqueToken()+L".tmp");
     try {
         std::ofstream stream(temporary);stream.exceptions(std::ios::failbit|std::ios::badbit);
-        stream<<"stroke "<<strokeWidth<<"\ntext "<<textSize<<"\nred "<<color.r<<"\ngreen "<<color.g<<"\nblue "<<color.b<<'\n';stream.close();
+        write(stream);stream.close();
         wincheck(MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH),"Save settings");
     }catch(...){std::error_code ignored;std::filesystem::remove(temporary,ignored);throw;}
 }
@@ -47,13 +73,12 @@ void Settings::setLaunchAtSignIn(bool enabled) {
     check(HRESULT_FROM_WIN32(status),"Update sign-in preference");
 }
 void Settings::show(HWND owner) {
-    TASKDIALOGCONFIG config{};config.cbSize=sizeof(config);config.hwndParent=owner;config.pszWindowTitle=L"ScreenshotTool settings";
-    config.pszMainInstruction=L"Capture with Print Screen";
-    config.pszContent=L"Drag to select, then annotate or export.\n\nQuick saves: Pictures \\ ScreenshotTool\nHDR selections save an SDR PNG and a lossless HDR JPEG XR.\n\nIf Windows also opens Snipping Tool, turn off “Use the Print Screen key to open screen capture” in Windows Settings > Accessibility > Keyboard.\n\nLaunch at sign-in uses this executable's current location. If you move it, disable and enable this option again.";
-    config.pszVerificationText=L"Launch ScreenshotTool when I sign in";config.dwCommonButtons=TDCBF_OK_BUTTON|TDCBF_CANCEL_BUTTON;
-    config.dwFlags=TDF_SIZE_TO_CONTENT|TDF_ALLOW_DIALOG_CANCELLATION;
-    if(launchAtSignIn())config.dwFlags|=TDF_VERIFICATION_FLAG_CHECKED;
-    int button{};BOOL enabled{};check(TaskDialogIndirect(&config,&button,nullptr,&enabled),"Open settings");
-    if(button==IDOK)setLaunchAtSignIn(enabled!=FALSE);
+    SettingsDialog state{automaticUpdates,launchAtSignIn()};
+    const auto result=DialogBoxParamW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(IDD_SETTINGS),owner,settingsDialog,reinterpret_cast<LPARAM>(&state));
+    if(result==-1)wincheck(FALSE,"Open settings");
+    if(result==IDOK) {
+        setLaunchAtSignIn(state.signIn);
+        auto updated=*this;updated.automaticUpdates=state.automatic;updated.save();*this=updated;
+    }
 }
 }

@@ -56,9 +56,16 @@ jobs:
           }
           gh release upload $tag --repo $repo --clobber release-assets/ScreenshotTool.exe "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip"
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed; the release remains a draft.' }
-          $metadata = gh api "repos/$repo/releases/tags/$tag"
+          # Draft releases are only returned through the release collection, not the tag endpoint.
+          $metadata = gh api "repos/$repo/releases?per_page=100" --paginate --slurp
           if ($LASTEXITCODE -ne 0) { throw 'Release asset verification failed.' }
-          $assets = ($metadata | ConvertFrom-Json).assets
+          $matchingReleases = @(
+            foreach ($page in ($metadata | ConvertFrom-Json)) {
+              $page | Where-Object { $_.tag_name -ceq $tag }
+            }
+          )
+          if ($matchingReleases.Count -ne 1 -or -not $matchingReleases[0].draft) { throw 'Expected one draft release before asset verification.' }
+          $assets = $matchingReleases[0].assets
           foreach ($name in @('ScreenshotTool.exe', "ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip")) {
             $asset = $assets | Where-Object { $_.name -ceq $name -and $_.size -gt 0 }
             if (-not $asset) { throw "Uploaded asset $name is missing or empty." }

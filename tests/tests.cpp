@@ -288,6 +288,7 @@ void colorTests() {
 #include "text_tests.hpp"
 }
 #include "overlay_tests.hpp"
+#include "crop_tests.hpp"
 int main(int argc,char** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);ComApartment com;
@@ -296,6 +297,6 @@ int main(int argc,char** argv) {
             for(const auto& m:desktop->monitors)std::wcout<<m.deviceName<<L" "<<m.bounds.width()<<L"x"<<m.bounds.height()<<L" origin="<<m.bounds.left<<L","<<m.bounds.top<<L" HDR="<<m.hdr<<L" SDRWhite="<<m.sdrWhiteNits<<L" rotation="<<static_cast<int>(m.rotation)<<L" adapter="<<m.adapterLuid<<L'\n';return 0;
         }
         if(argc>1 && std::string_view(argv[1])=="--text-drag-benchmark"){OverlayTestAccess::benchmark();return 0;}
-        captureTests();geometryTests();textTests();textStoreTests();OverlayTestAccess::tests();colorTests();std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
+        captureTests();geometryTests();textTests();textStoreTests();OverlayTestAccess::tests();CropTestAccess::tests();colorTests();std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

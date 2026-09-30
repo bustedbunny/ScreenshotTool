@@ -85,7 +85,7 @@ struct OverlayTestAccess {
             s.text_.begin({1910,100},s.selection_,{1,0,0,1},144);s.text_.bounds({1910,100,1911,101});s.text_.insert(L"W");clear(s);
             require(s.text_.visualBounds().right>1930,"Glyph overhang extends beyond handle margin");
             s.text_.bounds(translated(*s.text_.annotation().textBounds,{-1,0}));require(GetUpdateRect(s.windows_[1]->hwnd,nullptr,FALSE),"Glyph overhang invalidates adjacent monitor");
-            clear(s);s.selection_={0,0,1920,1080};s.repaintText({1915,0,1930,20},{1916,0,1931,20});require(!GetUpdateRect(s.windows_[1]->hwnd,nullptr,FALSE),"Crop excludes invisible decorations");
+            clear(s);s.selection_={0,0,1920,1080};s.repaintText({1915,0,1930,20},{1916,0,1931,20});require(GetUpdateRect(s.windows_[1]->hwnd,nullptr,FALSE),"Text decorations outside the crop remain visible and invalidate");
         });
     }
     static void benchmark() {

@@ -7,8 +7,8 @@ A portable Windows 11 x64 screenshot app with a system-tray icon, frozen desktop
 Run `ScreenshotTool.exe` from the portable package (`dist` after building). It stays in the system tray. **Print Screen** starts a capture; launching a second instance also starts a capture in the existing instance.
 
 1. Press **Print Screen**, then drag to select a region. Captures are frozen before any overlay appears. **Pen** is selected automatically after the first completed region in each capture session, so you can draw immediately.
-2. Use **Select (V)** to move the crop or drag its eight resize handles. Drawing stays anchored to the captured desktop. Later crop moves, resizes, and replacements keep your selected tool.
-3. Choose **Pen**, **Highlight**, **Rectangle**, **Ellipse**, **Line**, **Arrow**, **Text**, or **Censor**, and draw inside the selection. The toolbar provides color, stroke width, text size, and censor mode controls.
+2. Drag any of the crop's eight resize handles with **any tool**. With **Select (V)** active, drag outside the crop to replace it; dragging inside does nothing. Empty or interrupted crop gestures restore the previous region. Crop resizes and replacements keep drawings anchored to the desktop and retain your selected tool.
+3. Choose **Pen**, **Highlight**, **Rectangle**, **Ellipse**, **Line**, **Arrow**, **Text**, or **Censor**, and draw anywhere on the captured desktop. Drawings outside the crop remain visible in the dimmed area and can be included by resizing or redrawing the crop. The toolbar stays visible during drawing and provides color, stroke width, text size, and censor mode controls.
 4. Copy or save. Only selected pixels and annotations are exported.
 
 The default censor is an opaque black rectangle. The optional pixelation mode averages blocks of pixels; use black when complete concealment is required.
@@ -32,7 +32,7 @@ The default censor is an opaque black rectangle. The optional pixelation mode av
 
 The fixed single-letter shortcuts work after a region is completed, with no Ctrl, Shift, Alt, or Windows key held, and pause during dragging or export. Held-key repeats are ignored. Hover a toolbar control to see its shortcut.
 
-Text is edited directly on the screenshot with a caret, selection, dashed border, and eight handles. Click with **Text** for a 300-pixel-wide box (limited by the remaining crop width), or drag its initial bounds. Click or drag inside to position the caret or select text; double-click selects a word. Drag the border to move the box and handles to resize it. Width changes wrap text without scaling the font, and the box grows vertically to retain all content.
+Text is edited directly on the screenshot, including outside the crop, with a caret, selection, dashed border, and eight handles. Click with **Text** for a 300-pixel-wide box (limited by the remaining captured desktop width), or drag its initial bounds. Click or drag inside to position the caret or select text; double-click selects a word. Drag the border to move the box and handles to resize it. Width changes wrap text without scaling the font, and the box grows vertically to retain all content. Crop handles take priority when they overlap the text box; using one commits the text before resizing the crop.
 
 **Color** and **Text size** apply to the whole active box and preserve its selection. Enter inserts a newline. Ctrl+Enter, a canvas click outside the box, switching tools, or exporting commits one annotation. Committed boxes cannot be reopened. Escape discards active text; during IME composition, the first Escape cancels composition. Empty boxes create no annotation. Clicking elsewhere with Text starts the next box.
 

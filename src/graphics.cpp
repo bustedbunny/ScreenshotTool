@@ -181,29 +181,26 @@ void Graphics::attach(HWND window,int width,int height) {
     check(context_->CreateBitmapFromDxgiSurface(surface.Get(),&props,&backbuffer_),"Create overlay drawing target");
 }
 void Graphics::present(ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float white,bool handles,const InlineText* text,bool caretVisible) {
+    drawPreview(backbuffer_.Get(),background,monitor,selection,annotations,draft,white,handles,text,caretVisible);
+    check(swapchain_->Present(1,0),"Present overlay. The graphics device may have disconnected; capture again");
+}
+void Graphics::drawPreview(ID2D1Bitmap1* output,ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float white,bool handles,const InlineText* text,bool caretVisible) {
     if(!factory_->IsCurrent())throw std::runtime_error("Display configuration changed. Capture again.");
-    context_->SetTarget(backbuffer_.Get());context_->SetTransform(D2D1::Matrix3x2F::Identity());context_->BeginDraw();
+    context_->SetTarget(output);context_->SetTransform(D2D1::Matrix3x2F::Identity());context_->BeginDraw();
     context_->DrawBitmap(background,nullptr,1,D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     check(context_->EndDraw(),"Draw frozen desktop");
-    document(backbuffer_.Get(),monitor,selection,annotations,white);
-    if(draft)document(backbuffer_.Get(),monitor,selection,{draft,1},white,text?text->layout():nullptr);
-    context_->SetTarget(backbuffer_.Get());context_->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(-monitor.left),static_cast<float>(-monitor.top)));context_->BeginDraw();
+    document(output,monitor,monitor,annotations,white);
+    if(draft)document(output,monitor,monitor,{draft,1},white,text?text->layout():nullptr);
+    context_->SetTarget(output);context_->SetTransform(D2D1::Matrix3x2F::Translation(static_cast<float>(-monitor.left),static_cast<float>(-monitor.top)));context_->BeginDraw();
     auto* dim=dimBrush_.Get();auto* border=borderBrush_.Get();
     const auto selected=intersect(monitor,selection);
     if(selected.empty())context_->FillRectangle(drect(monitor),dim);
     else {
         for(const auto r:{Rect{monitor.left,monitor.top,monitor.right,selected.top},Rect{monitor.left,selected.bottom,monitor.right,monitor.bottom},Rect{monitor.left,selected.top,selected.left,selected.bottom},Rect{selected.right,selected.top,monitor.right,selected.bottom}})
             if(!r.empty())context_->FillRectangle(drect(r),dim);
-        border->SetColor(D2D1::ColorF(0.13f*white,0.6f*white,white,1));
-        context_->DrawRectangle(drect(selection),border,1.f);
-        if(handles) {
-            const int mx=(selection.left+selection.right)/2,my=(selection.top+selection.bottom)/2;
-            for(const Point p: {Point{selection.left,selection.top},Point{mx,selection.top},Point{selection.right,selection.top},Point{selection.right,my},Point{selection.right,selection.bottom},Point{mx,selection.bottom},Point{selection.left,selection.bottom},Point{selection.left,my}})
-                context_->FillRectangle(drect({p.x-4,p.y-4,p.x+4,p.y+4}),border);
-        }
     }
-    if(text && text->active() && !selected.empty()) {
-        context_->PushAxisAlignedClip(drect(selected),D2D1_ANTIALIAS_MODE_ALIASED);
+    if(text && text->active()) {
+        context_->PushAxisAlignedClip(drect(monitor),D2D1_ANTIALIAS_MODE_ALIASED);
         const auto box=*text->annotation().textBounds;
         auto* ink=inkBrush_.Get();auto* highlight=highlightBrush_.Get();auto* paper=paperBrush_.Get();
         ink->SetColor(D2D1::ColorF(0.05f*white,0.35f*white,0.8f*white,1));
@@ -224,7 +221,16 @@ void Graphics::present(ID2D1Bitmap1* background,Rect monitor,Rect selection,std:
         }
         context_->PopAxisAlignedClip();
     }
+    // Crop handles remain visible, including over an active text box or across a monitor seam.
+    if(!selection.empty()) {
+        border->SetColor(D2D1::ColorF(0.13f*white,0.6f*white,white,1));
+        context_->DrawRectangle(drect(selection),border,1.f);
+        if(handles) {
+            const int mx=(selection.left+selection.right)/2,my=(selection.top+selection.bottom)/2;
+            for(const Point p: {Point{selection.left,selection.top},Point{mx,selection.top},Point{selection.right,selection.top},Point{selection.right,my},Point{selection.right,selection.bottom},Point{mx,selection.bottom},Point{selection.left,selection.bottom},Point{selection.left,my}})
+                context_->FillRectangle(drect({p.x-4,p.y-4,p.x+4,p.y+4}),border);
+        }
+    }
     check(context_->EndDraw(),"Draw selection overlay");context_->SetTarget(nullptr);
-    check(swapchain_->Present(1,0),"Present overlay. The graphics device may have disconnected; capture again");
 }
 }

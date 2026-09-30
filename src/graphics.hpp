@@ -18,6 +18,8 @@ public:
     ID2D1DeviceContext* context() const {return context_.Get();}
     bool isCurrent() const {return factory_->IsCurrent()!=FALSE;}
 private:
+    friend struct GraphicsTestAccess;
+    void drawPreview(ID2D1Bitmap1* output,ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float whiteScale,bool handles,const InlineText* text,bool caretVisible);
     void annotation(const Annotation& annotation,float whiteScale,IDWriteTextLayout* layout=nullptr);
     void pixelatedCensor(ID2D1Bitmap1* output,Rect targetBounds,Rect selection,const Annotation& annotation);
     ComPtr<ID3D11Device> device_;

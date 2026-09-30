@@ -26,7 +26,7 @@ constexpr ToolbarShortcut toolbarShortcuts[]{
     {ColorId,L'C'},{WidthId,L'W'},{TextSizeId,L'S'},{CensorModeId,L'P'}
 };
 const wchar_t* toolNames[]{L"Select",L"Pen",L"Highlight",L"Rectangle",L"Ellipse",L"Line",L"Arrow",L"Text",L"Censor"};
-const wchar_t* toolTips[]{L"Select: move or resize the crop. Drawing stays anchored to the desktop.",L"Pen: draw a freehand stroke.",L"Highlighter: draw a translucent wide stroke.",L"Rectangle: draw an outline.",L"Ellipse: draw an oval outline.",L"Line: drag between two points.",L"Arrow: point at a detail.",L"Text: click, type, then Ctrl+Enter or click outside to finish.",L"Censor: drag an opaque black cover (or choose pixelation)."};
+const wchar_t* toolTips[]{L"Select: drag outside the crop to replace it. Crop resize handles work with every tool.",L"Pen: draw a freehand stroke anywhere on the captured desktop.",L"Highlighter: draw a translucent wide stroke anywhere on the captured desktop.",L"Rectangle: draw an outline anywhere on the captured desktop.",L"Ellipse: draw an oval outline anywhere on the captured desktop.",L"Line: drag between two desktop points.",L"Arrow: point at a detail anywhere on the captured desktop.",L"Text: click anywhere, type, then Ctrl+Enter or click outside the box to finish.",L"Censor: drag an opaque black cover anywhere (or choose pixelation)."};
 }
 OverlaySession::OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(std::wstring)> failure)
     :instance_(instance),desktop_(std::move(desktop)),settings_(settings),action_(std::move(action)),failure_(std::move(failure)) {
@@ -83,10 +83,7 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
     case WM_PAINT: {PAINTSTRUCT paint{};BeginPaint(view.hwnd,&paint);EndPaint(view.hwnd,&paint);if(view.graphics && !closing_)render(view);return 0;}
     case WM_ERASEBKGND:return 1;
     case WM_LBUTTONDOWN:if(!busy_)mouseDown(view.hwnd,cursorPoint());return 0;
-    case WM_LBUTTONDBLCLK:
-        if(!busy_ && text_.active() && selection_.contains(cursorPoint()) && text_.annotation().textBounds->contains(cursorPoint()) && text_.hitBorder(cursorPoint())==Handle::None) {
-            if(textStore_)textStore_->completeComposition();text_.selectWord(text_.hit(cursorPoint()));
-        }else if(!busy_)mouseDown(view.hwnd,cursorPoint());return 0;
+    case WM_LBUTTONDBLCLK:if(!busy_)mouseDoubleClick(view.hwnd,cursorPoint());return 0;
     case WM_CHAR:
         if(!busy_ && text_.active())text_.character(static_cast<wchar_t>(wp));return 0;
     case WM_UNICHAR:
@@ -104,26 +101,12 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
     case WM_CAPTURECHANGED:
         if(textDragging_ && reinterpret_cast<HWND>(lp)!=view.hwnd){textDragging_=textCreating_=textSelecting_=false;text_.endGesture();}
         if(dragging_ && reinterpret_cast<HWND>(lp)!=view.hwnd) {
-            // An interrupted initial drag has not established the first region yet.
-            if(selecting_ && !firstRegionCompleted_)selection_=original_;
+            if(selecting_)selection_=original_;
             dragging_=false;draft_.reset();placeToolbar();refreshButtons();refreshStatus();repaint();
         }return 0;
     case WM_SETCURSOR: {
         if(LOWORD(lp)!=HTCLIENT)break;
-        LPCWSTR cursor=busy_?IDC_WAIT:IDC_CROSS;
-        Handle hit=Handle::None;
-        if(!busy_ && text_.active() && selection_.contains(cursorPoint())) {
-            hit=text_.hitBorder(cursorPoint());if(hit==Handle::None && text_.annotation().textBounds->contains(cursorPoint()))cursor=IDC_IBEAM;
-        }else if(!busy_ && tool_==Tool::Select && !selection_.empty())hit=hitSelection(selection_,cursorPoint());
-        switch(hit) {
-            case Handle::Move:cursor=IDC_SIZEALL;break;
-            case Handle::N:case Handle::S:cursor=IDC_SIZENS;break;
-            case Handle::E:case Handle::W:cursor=IDC_SIZEWE;break;
-            case Handle::NW:case Handle::SE:cursor=IDC_SIZENWSE;break;
-            case Handle::NE:case Handle::SW:cursor=IDC_SIZENESW;break;
-            default:break;
-        }
-        SetCursor(LoadCursorW(nullptr,cursor));return TRUE;
+        SetCursor(LoadCursorW(nullptr,cursorAt(cursorPoint())));return TRUE;
     }
     case WM_DPICHANGED: // Physical desktop bounds are immutable; a live layout/DPI change aborts the session.
         if(IsWindowVisible(view.hwnd) && !closing_)failure_(L"Display scaling changed. Press Print Screen to capture the new layout.");return 0;
@@ -134,12 +117,11 @@ LRESULT OverlaySession::monitorMessage(MonitorWindow& view,UINT msg,WPARAM wp,LP
 void OverlaySession::render(MonitorWindow& view) {
     const auto& monitor=desktop_->monitors[view.index];
     const Annotation* preview=text_.active()?&text_.annotation():(draft_?&*draft_:nullptr);
-    view.graphics->present(view.background.Get(),monitor.bounds,selection_,history_.visible(),preview,monitor.hdr?monitor.sdrWhiteNits/80.f:1.f,tool_==Tool::Select && !dragging_,text_.active()?&text_:nullptr,caretVisible_ && GetFocus()==textWindow_);
+    view.graphics->present(view.background.Get(),monitor.bounds,selection_,history_.visible(),preview,monitor.hdr?monitor.sdrWhiteNits/80.f:1.f,!selection_.empty(),text_.active()?&text_:nullptr,caretVisible_ && GetFocus()==textWindow_);
 }
 void OverlaySession::repaint() {for(auto& window:windows_)InvalidateRect(window->hwnd,nullptr,FALSE);}
 void OverlaySession::repaintText(Rect previous,Rect current) {
     // Test each extent separately: a jump must not dirty the monitors in between.
-    previous=intersect(previous,selection_);current=intersect(current,selection_);
     for(auto& window:windows_) {
         const auto monitor=desktop_->monitors[window->index].bounds;
         const auto dirty=united(intersect(previous,monitor),intersect(current,monitor));
@@ -148,8 +130,38 @@ void OverlaySession::repaintText(Rect previous,Rect current) {
         InvalidateRect(window->hwnd,&local,FALSE);
     }
 }
+Handle OverlaySession::cropHandle(Point p) const {
+    const auto handle=hitSelection(selection_,p);
+    return handle==Handle::Move?Handle::None:handle;
+}
+LPCWSTR OverlaySession::cursorAt(Point p) const {
+    if(busy_)return IDC_WAIT;
+    auto hit=cropHandle(p);LPCWSTR cursor=tool_==Tool::Select && selection_.contains(p)?IDC_ARROW:IDC_CROSS;
+    if(hit==Handle::None && text_.active()) {
+        hit=text_.hitBorder(p);
+        if(hit==Handle::None && text_.annotation().textBounds->contains(p))cursor=IDC_IBEAM;
+    }
+    switch(hit) {
+        case Handle::Move:return IDC_SIZEALL; // Only an active text-box border can move.
+        case Handle::N:case Handle::S:return IDC_SIZENS;
+        case Handle::E:case Handle::W:return IDC_SIZEWE;
+        case Handle::NW:case Handle::SE:return IDC_SIZENWSE;
+        case Handle::NE:case Handle::SW:return IDC_SIZENESW;
+        default:return cursor;
+    }
+}
+void OverlaySession::mouseDoubleClick(HWND hwnd,Point p) {
+    if(cropHandle(p)==Handle::None && text_.active() && text_.annotation().textBounds->contains(p) && text_.hitBorder(p)==Handle::None) {
+        if(textStore_)textStore_->completeComposition();text_.selectWord(text_.hit(p));
+    }else mouseDown(hwnd,p);
+}
 void OverlaySession::mouseDown(HWND hwnd,Point p) {
-    if(text_.active() && selection_.contains(p) && (text_.hitBorder(p)!=Handle::None || text_.annotation().textBounds->contains(p))) {
+    const auto crop=cropHandle(p);
+    if(crop!=Handle::None) {
+        commitText();SetFocus(hwnd);dragStart_=clampPoint(p,desktop_->bounds());original_=selection_;draft_.reset();handle_=crop;
+        selecting_=dragging_=true;SetCapture(hwnd);ShowWindow(toolbar_,SW_HIDE);return;
+    }
+    if(text_.active() && (text_.hitBorder(p)!=Handle::None || text_.annotation().textBounds->contains(p))) {
         if(textStore_)textStore_->completeComposition();textWindow_=hwnd;SetFocus(hwnd);if(textStore_)textStore_->focus(hwnd);
         textStart_=p;textOriginal_=*text_.annotation().textBounds;textHandle_=text_.hitBorder(p);
         textSelecting_=textHandle_==Handle::None;textDragging_=true;textCreating_=false;
@@ -157,24 +169,23 @@ void OverlaySession::mouseDown(HWND hwnd,Point p) {
         SetCapture(hwnd);return;
     }
     commitText();SetFocus(hwnd);p=clampPoint(p,desktop_->bounds());
+    if(tool_==Tool::Select && selection_.contains(p))return;
     dragStart_=p;original_=selection_;draft_.reset();
-    selecting_=selection_.empty() || tool_==Tool::Select;
+    handle_=Handle::None;selecting_=selection_.empty() || tool_==Tool::Select;
     if(selecting_) {
-        handle_=hitSelection(selection_,p);
-        if(handle_==Handle::None)selection_={};
+        selection_={};
     } else {
-        if(!selection_.contains(p))return;
         if(tool_==Tool::Text){editText(hwnd,p);return;}
         draft_=Annotation{tool_,{p},settings_.color,settings_.strokeWidth,settings_.textSize,L"",pixelated_};
     }
-    dragging_=true;SetCapture(hwnd);ShowWindow(toolbar_,SW_HIDE);repaint();
+    dragging_=true;SetCapture(hwnd);if(selecting_)ShowWindow(toolbar_,SW_HIDE);repaint();
 }
 void OverlaySession::mouseMove(Point p) {
     if(textDragging_) {
         const Point delta{p.x-textStart_.x,p.y-textStart_.y};
         if(textCreating_) {
             if(std::abs(delta.x)>3 || std::abs(delta.y)>3) {
-                auto b=normalized(textStart_,clampPoint(p,selection_));b.right=std::max(b.left+1,b.right);b.bottom=std::max(b.top+1,b.bottom);text_.bounds(b);
+                auto b=normalized(textStart_,clampPoint(p,desktop_->bounds()));b.right=std::max(b.left+1,b.right);b.bottom=std::max(b.top+1,b.bottom);text_.bounds(b);
             }
         }else if(textSelecting_)text_.placeCaret(p,true);
         else text_.bounds(InlineText::resized(textOriginal_,textHandle_,delta));
@@ -182,10 +193,11 @@ void OverlaySession::mouseMove(Point p) {
     }
     if(!dragging_)return;p=clampPoint(p,desktop_->bounds());
     if(selecting_) {
-        if(handle_==Handle::None)selection_=normalized(dragStart_,p);
-        else selection_=adjustSelection(original_,handle_,{p.x-dragStart_.x,p.y-dragStart_.y},desktop_->bounds());
+        const auto bounds=handle_==Handle::None?normalized(dragStart_,p):adjustSelection(original_,handle_,{p.x-dragStart_.x,p.y-dragStart_.y},desktop_->bounds());
+        if(bounds==selection_)return;selection_=bounds;
     } else if(draft_) {
-        if(draft_->tool==Tool::Pen || draft_->tool==Tool::Highlighter) {if(p!=draft_->points.back())draft_->points.push_back(p);}
+        if(p==draft_->points.back())return;
+        if(draft_->tool==Tool::Pen || draft_->tool==Tool::Highlighter)draft_->points.push_back(p);
         else {if(draft_->points.size()==1)draft_->points.push_back(p);else draft_->points.back()=p;}
     }
     repaint();
@@ -193,17 +205,18 @@ void OverlaySession::mouseMove(Point p) {
 void OverlaySession::mouseUp(Point p) {
     if(textDragging_){mouseMove(p);textDragging_=textCreating_=textSelecting_=false;text_.endGesture();ReleaseCapture();return;}
     if(!dragging_)return;mouseMove(p);dragging_=false;ReleaseCapture();
+    if(selecting_ && selection_.empty())selection_=original_;
     if(selecting_ && !firstRegionCompleted_ && !selection_.empty()) {
         firstRegionCompleted_=true;tool_=Tool::Pen;
     }
     if(draft_){history_.add(std::move(*draft_));draft_.reset();}
-    placeToolbar();refreshButtons();refreshStatus();repaint();
+    if(selecting_)placeToolbar();refreshButtons();if(selecting_)refreshStatus();repaint();
 }
 void OverlaySession::editText(HWND hwnd,Point p) {
     textWindow_=hwnd;
     try {
-        text_.begin(p,selection_,settings_.color,settings_.textSize);
-        textStore_.Attach(new TextStore(text_,hwnd,selection_));textStore_->start();
+        text_.begin(p,desktop_->bounds(),settings_.color,settings_.textSize);
+        textStore_.Attach(new TextStore(text_,hwnd,desktop_->bounds()));textStore_->start();
         textStart_=p;textOriginal_=*text_.annotation().textBounds;textCreating_=textDragging_=true;textSelecting_=false;
         text_.beginGesture();SetCapture(hwnd);SetFocus(hwnd);
     }catch(...){closeTextEditor();throw;}
@@ -358,7 +371,7 @@ void OverlaySession::layoutToolbar(unsigned dpi) {
     }
 }
 void OverlaySession::placeToolbar() {
-    if(!toolbar_ || selection_.empty() || dragging_){if(toolbar_)ShowWindow(toolbar_,SW_HIDE);return;}
+    if(!toolbar_ || selection_.empty() || (dragging_ && selecting_)){if(toolbar_)ShowWindow(toolbar_,SW_HIDE);return;}
     // Anchor on the monitor nearest the selection's lower-right edge, then clamp to its work area.
     POINT anchor{selection_.right-1,selection_.bottom-1};HMONITOR monitor=MonitorFromPoint(anchor,MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{sizeof(info)};GetMonitorInfoW(monitor,&info);

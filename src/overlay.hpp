@@ -19,6 +19,7 @@ public:
     void commitText(bool discard=false);
 private:
     friend struct OverlayTestAccess;
+    friend struct CropTestAccess;
     struct MonitorWindow {
         OverlaySession* session{};size_t index{};HWND hwnd{};
         std::unique_ptr<Graphics> graphics;ComPtr<ID2D1Bitmap1> background;
@@ -31,8 +32,11 @@ private:
     LRESULT toolbarMessage(UINT,WPARAM,LPARAM);
 
     void mouseDown(HWND window,Point point);
+    void mouseDoubleClick(HWND window,Point point);
     void mouseMove(Point point);
     void mouseUp(Point point);
+    Handle cropHandle(Point point) const;
+    LPCWSTR cursorAt(Point point) const;
     void repaint();
     void repaintText(Rect previous,Rect current);
     void placeToolbar();

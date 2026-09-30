@@ -1,5 +1,29 @@
 # Validation record
 
+## Crop editing with every tool and desktop-wide drawing - 2026-09-30
+
+Release build completed successfully with MSVC x64 using `cmake --build --preset release --parallel`. The fresh `ctest --preset release --output-on-failure` run passed: **48 checks passed, 0 failed** in `ScreenshotToolTests` (one CTest executable, 0.90 seconds). The rebuilt executable is `build/Release/ScreenshotTool.exe`.
+
+Five new regression checks cover:
+
+1. All eight crop resize handles with all nine tools, matching resize cursors, no annotation/text creation on crop handles, repeated-pointer no-op behavior, tool retention, no region movement from the interior, and the export-busy cursor.
+2. Select replacement from outside in all four drag directions, unchanged crops after clicks/zero-height replacements, original-region restoration on capture loss during replacement or resize, and the initial region-to-Pen transition.
+3. Pen, Highlighter, Rectangle, Ellipse, Line, Arrow and Censor starting outside and crossing the crop, toolbar visibility during drawing, repeated-pointer no-op behavior, full desktop annotation coordinates, preservation through shrink/replacement, and annotation undo/redo.
+4. Actual TSF-backed text creation outside the crop, desktop-based default width and initial dragging, outside caret/word selection and double-click routing, desktop-clipped screen/IME extents, text movement with layout reuse, crop/text handle priority, composing-text commit exactly once before crop resize, and the default width at the desktop edge.
+5. WARP FP16 preview pixels for every drawing tool, text, black cover and pixelation. Outside-region drawing receives the same 25% shade as its desktop background; the inside-region preview matches the cropped export away from editing decorations. Exports retain crop dimensions and exclude wholly outside censors. Text handles appear outside the crop, and overlapping crop handles draw above text decorations.
+
+The preview pixel test calls the same private drawing path used before swap-chain presentation and reads its FP16 target before `Present`, which rotates the swap-chain buffers. Existing real swap-chain presentation, layout reuse, composition, targeted invalidation, toolbar mutation/clipping, preview/export, acquisition, codecs and file-transaction tests remain passing. Native gesture fixtures use offscreen Win32 windows and keep the toolbar offscreen; they do not inject desktop input.
+
+### Interactive checks pending
+
+Computer Use failed before app interaction. Initial import reported `node_repl kernel exited unexpectedly` with **`windows sandbox failed: helper_unknown_error: setup refresh had errors`**. A reset and initialization retry reported **`trusted Node process exited unexpectedly; kernel reset, rerun your request`**. No visual or affected-display checks are marked passed.
+
+- Resize all eight crop handles while each tool is active; confirm resize cursors and crop priority over an active text box.
+- Confirm Select cannot move the crop and can replace it from outside; verify interrupted/empty replacements restore it.
+- Draw, create/edit/move text, use censor/pixelation, and preserve annotations while shrinking or replacing the crop.
+- Verify shaded outside-region previews, crop-only copy/save output, and a stable visible toolbar during drawing.
+- Verify live IME candidate positioning outside the crop and physical negative-origin, cross-monitor, mixed-DPI and SDR/HDR behavior.
+
 ## Text drag lag and toolbar flicker - 2026-09-17
 
 Release build succeeded with MSVC x64. Final CTest run: **43 checks passed, 0 failed** in `ScreenshotToolTests` (one CTest executable, 0.40 seconds). `git diff --check` passed. Existing undo, composition, crop, preview/export pixel, acquisition, codec and file-transaction checks remain passing.

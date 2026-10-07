@@ -6,6 +6,10 @@
     "architecture": "x64",
     "binaryDir": "${sourceDir}/build",
     "cacheVariables": {"BUILD_TESTING": "ON"}
+  }, {
+    "name": "windows-x64-vs2026",
+    "inherits": "windows-x64",
+    "generator": "Visual Studio 18 2026"
   }],
   "buildPresets": [{"name": "release", "configurePreset": "windows-x64", "configuration": "Release"}],
   "testPresets": [{"name": "release", "configurePreset": "windows-x64", "configuration": "Release", "output": {"outputOnFailure": true}}]

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$SkipTests, [string]$BuildDirectory = 'build')
+param([switch]$SkipTests, [string]$BuildDirectory = 'build', [string]$ConfigurePreset = 'windows-x64')
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $cmakeCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
@@ -13,7 +13,7 @@ if ($cmakeCommand) {
     if (-not (Test-Path -LiteralPath $cmakePath)) { throw 'Install the Visual Studio C++ CMake tools component, or put CMake on PATH.' }
 }
 $buildPath = if ([IO.Path]::IsPathRooted($BuildDirectory)) { [IO.Path]::GetFullPath($BuildDirectory) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BuildDirectory)) }
-& $cmakePath --preset windows-x64 -B $buildPath
+& $cmakePath --preset $ConfigurePreset -B $buildPath
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
 & $cmakePath --build $buildPath --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }

@@ -94,7 +94,7 @@ Command-line entry point: `ScreenshotTool.exe --capture`.
 Requirements:
 
 - Windows 11 x64.
-- Visual Studio 2022 with **Desktop development with C++**, a Windows 11 SDK, and **C++ CMake tools for Windows**.
+- Visual Studio 2022 with **Desktop development with C++**, a Windows 11 SDK, and **C++ CMake tools for Windows**. Visual Studio 2026 is also supported with CMake 4.2 or newer and `-ConfigurePreset windows-x64-vs2026` on the build or package script.
 - CMake 3.24 or newer (the Visual Studio bundled version works).
 
 From PowerShell in the source directory:

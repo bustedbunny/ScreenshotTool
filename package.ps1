@@ -1,9 +1,9 @@
 [CmdletBinding()]
-param([string]$InnoCompilerPath, [string]$BuildDirectory = 'build/release-packaging')
+param([string]$InnoCompilerPath, [string]$BuildDirectory = 'build/release-packaging', [string]$ConfigurePreset = 'windows-x64')
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $buildPath = if ([IO.Path]::IsPathRooted($BuildDirectory)) { [IO.Path]::GetFullPath($BuildDirectory) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BuildDirectory)) }
-& (Join-Path $PSScriptRoot 'build.ps1') -BuildDirectory $buildPath
+& (Join-Path $PSScriptRoot 'build.ps1') -BuildDirectory $buildPath -ConfigurePreset $ConfigurePreset
 $cache = Get-Content -LiteralPath (Join-Path $buildPath 'CMakeCache.txt')
 $cmakeEntry = @($cache | Where-Object { $_ -match '^CMAKE_COMMAND:INTERNAL=' })
 if ($cmakeEntry.Count -ne 1) { throw 'Configured CMake executable was not found.' }

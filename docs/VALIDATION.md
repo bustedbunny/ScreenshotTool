@@ -1,5 +1,11 @@
 # Validation record
 
+## Apply settings without closing - 2026-10-07
+
+Release build succeeded with MSVC x64 in `build/apply-validation`. The fresh CTest run passed **77 checks, 0 failed**: 51 in `ScreenshotToolTests` and 26 in `ScreenshotToolUpdateTests`, in 7.35 seconds. `git diff --check` passed. The rebuilt executable is `build/apply-validation/Release/ScreenshotTool.exe`.
+
+Native dialog checks cover all-field Apply, commit and refresh ordering, Apply followed by Cancel/window close/OK, net-change enabling, failed Apply/OK and retry, and preserved drawing settings. All seven language choices are checked before and after repeated Apply at 96/144/192 DPI for translated captions, native language options, actual control fonts and glyphs, button fit, non-overlap, and preserved window position. Persistence is injected for dialog tests, so they do not alter user preferences or sign-in entries; live tray interaction was not performed. Builds and file/updater tests ran outside the restricted sandbox because it stalled MSBuild and denied existing native file operations.
+
 ## Language selection and automatic detection - 2026-10-07
 
 Release build succeeded with MSVC x64 in `build/localization-validation`. The fresh CTest run passed **75 checks, 0 failed**: 51 in `ScreenshotToolTests` and 24 in `ScreenshotToolUpdateTests`, in 6.84 seconds. `git diff --check` passed. The rebuilt executable is `build/localization-validation/Release/ScreenshotTool.exe`.

@@ -23,6 +23,7 @@ constexpr CatalogEntry catalog[]{
     {TextId::LanguageLabel,{L"Language",L"Язык",L"语言",L"言語",L"Sprache",L"Idioma"}},
     {TextId::Ok,{L"OK",L"ОК",L"确定",L"OK",L"OK",L"Aceptar"}},
     {TextId::Cancel,{L"Cancel",L"Отмена",L"取消",L"キャンセル",L"Abbrechen",L"Cancelar"}},
+    {TextId::Apply,{L"Apply",L"Применить",L"应用",L"適用",L"Übernehmen",L"Aplicar"}},
     {TextId::Select,{L"Select",L"Выбор",L"选择",L"選択",L"Auswahl",L"Seleccionar"}},
     {TextId::Pen,{L"Pen",L"Перо",L"画笔",L"ペン",L"Stift",L"Lápiz"}},
     {TextId::Highlight,{L"Highlight",L"Маркер",L"荧光笔",L"蛍光ペン",L"Marker",L"Resaltar"}},

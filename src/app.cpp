@@ -122,7 +122,7 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
         case FolderId: {auto folder=picturesDirectory();std::filesystem::create_directories(folder);auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL));if(result<=32)throw AppError(TextId::OpenFolderFailed);break;}
         case SettingsId:if(state_.get()==State::Idle && !dialogOpen_ && !updateHandoff_) {
             dialogOpen_=true;
-            try{settings_.show(window_);language_=settings_.effectiveLanguage();refreshTrayLanguage();}
+            try{settings_.show(window_,[this]{language_=settings_.effectiveLanguage();refreshTrayLanguage();});}
             catch(const std::exception& e){dialogOpen_=false;error(errorMessage(e,TextId::SettingsFailed));PostMessageW(window_,PendingUpdateMessage,0,0);break;}
             dialogOpen_=false;PostMessageW(window_,PendingUpdateMessage,0,0);
         }break;

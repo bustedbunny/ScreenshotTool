@@ -18,7 +18,7 @@ const wchar_t* languageName(Language language);
 HFONT createUiFont(Language language, int pixelHeight, int weight = FW_NORMAL);
 
 enum class TextId {
-    Automatic, SettingsTitle, SettingsHeader, SettingsInstructions, SettingsPrintScreen, AutomaticUpdates, LaunchAtSignIn, SignInHelp, LanguageLabel, Ok, Cancel,
+    Automatic, SettingsTitle, SettingsHeader, SettingsInstructions, SettingsPrintScreen, AutomaticUpdates, LaunchAtSignIn, SignInHelp, LanguageLabel, Ok, Cancel, Apply,
     Select, Pen, Highlight, Rectangle, Ellipse, Line, Arrow, Text, Censor,
     SelectTip, PenTip, HighlightTip, RectangleTip, EllipseTip, LineTip, ArrowTip, TextTip, CensorTip,
     Color, Width, TextSize, CoverBlack, CoverPixelate, ColorTip, WidthTip, TextSizeTip, CensorModeTip,

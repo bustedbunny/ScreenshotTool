@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <future>
 #include <commctrl.h>
+#include "../resources/resource.h"
 
 namespace shot {
 namespace {
@@ -12,6 +13,7 @@ struct DownloadResult {std::optional<PreparedUpdate> update;std::optional<Messag
 struct CaptureResult {unsigned generation{};std::shared_ptr<const DesktopImage> desktop;std::optional<Message> error;};
 struct ExportResult {unsigned generation{};SessionAction action{};EncodedImage image;std::vector<std::filesystem::path> paths;std::optional<Message> error;};
 HICON makeIcon() {
+    if(auto icon=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(IDI_APP),IMAGE_ICON,32,32,LR_DEFAULTCOLOR)))return icon;
     // A small native vector-drawn tray glyph, no external assets or runtime files.
     HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
     BITMAPV5HEADER header{};header.bV5Size=sizeof(header);header.bV5Width=32;header.bV5Height=-32;header.bV5Planes=1;header.bV5BitCount=32;header.bV5Compression=BI_BITFIELDS;header.bV5RedMask=0xff0000;header.bV5GreenMask=0xff00;header.bV5BlueMask=0xff;header.bV5AlphaMask=0xff000000;

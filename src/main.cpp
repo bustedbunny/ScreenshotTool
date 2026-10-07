@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "installation.hpp"
 #include <commctrl.h>
 #include <shellapi.h>
 #include <exception>
@@ -29,6 +30,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int) {
         INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES|ICC_WIN95_CLASSES};InitCommonControlsEx(&controls);
         bool immediate=false;
         for(int i=1;i<argc;++i)if(std::wstring_view(argv[i])==L"--capture")immediate=true;
-        App app(instance,std::move(settings));UpdateService::finishStartup(argc,argv);return app.run(immediate);
+        App app(instance,std::move(settings));UpdateService::finishStartup(argc,argv);
+        Installation::refreshDisplayVersion();return app.run(immediate);
     } catch(const std::exception& e) {MessageBoxW(nullptr,errorMessage(e,TextId::StartupFailed).render(language).c_str(),L"ScreenshotTool",MB_OK|MB_ICONERROR);return 1;}
 }

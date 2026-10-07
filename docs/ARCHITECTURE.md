@@ -14,6 +14,7 @@
 | `settings.hpp`, `settings.cpp` | Per-user settings and optional sign-in registry entry |
 | `localization.hpp`, `localization.cpp` | Embedded six-language catalogs, Windows display-language resolution, Unicode message formatting, locale UI fonts and structured errors |
 | `update.hpp`, `update.cpp` | GitHub release metadata, cancellable HTTPS, executable verification, native helper handoff and recoverable replacement |
+| `installation.hpp`, `installation.cpp` | Best-effort Installed Apps version refresh for the registered executable |
 | `app.hpp`, `app.cpp`, `main.cpp` | Single-instance mutex, tray, low-level keyboard hook, message loop, worker lifetimes and session state |
 
 ## Sessions and threads
@@ -67,6 +68,16 @@ Release tags compare numerically after normalizing optional `v` and two-part ver
 The UI defers update prompts and installation until the session is idle. Once the user confirms download and restart, captures can proceed during download. Same-directory replacement preparation and permission checks finish before handoff. A temporary copy of the existing app handles `--apply-update` before taking the single-instance mutex. Only explicitly listed process/event handles are inherited. The helper validates its target against the parent process image, acknowledges readiness, waits for parent termination and uses `ReplaceFileW` with a backup. Restart requires a readiness event signaled after normal app initialization. Failed restart restores the previous executable; an unrecoverable restore leaves the backup for manual recovery. Successful startup waits for the helper to finish and removes its uniquely named staging directory. Reported update failures do not close screenshot sessions.
 
 This transaction handles ordinary errors, rather than guaranteeing recovery across power loss or forced process termination. Those interruptions can leave staging files or a backup. Settings and screenshots are stored outside the executable and do not participate in replacement.
+
+## Installation and release packaging
+
+Inno Setup uses stable `AppId=bustedbunny.ScreenshotTool` and a per-user installation under `%LOCALAPPDATA%\Programs\ScreenshotTool`. Windows 11 build 22000 and native x64 are the minimum platform. Setup reuses the installed directory, registers an uninstaller in the current user's Installed Apps list, creates a Start Menu shortcut, and offers an unchecked desktop shortcut. The existing application mutex blocks installation and uninstall while the app runs; setup does not terminate it. A separate update-operation mutex covers the helper's replacement and restart handoff, and the helper rejects a running setup or uninstall. The executable, installer, and shortcuts share an embedded icon matching the tray glyph.
+
+Before replacement, setup compares the existing executable's embedded version with its payload version, allowing repair and upgrades while rejecting downgrades, including after an in-app update. Installation migrates an already enabled current-user sign-in entry to the installed executable. Fresh installation leaves it disabled. Uninstall removes that entry only if its parsed executable path still matches this installation, and preserves settings and screenshots. App startup updates the registered DisplayVersion only if the running executable matches this installation's registered path; registry errors cannot prevent startup. Portable copies do not change installed-app metadata.
+
+`package.ps1` runs the Release build and tests in a separate `build/release-packaging` directory, provisions the pinned Inno Setup 6.7.3 compiler in the isolated `build/tools` directory after checksum and Authenticode verification, and creates three release assets: the portable ZIP with documentation, the setup executable, and the raw `ScreenshotTool.exe` needed by existing updaters. Version information comes from the CMake project version. Ordinary `build.ps1` remains usable without installer tooling and defaults to `build`; both scripts accept a relative or absolute `-BuildDirectory`.
+
+The Windows 2025 release workflow validates versions and payload hashes and exercises installation on a disposable runner before uploading to a draft. All three uploaded assets must match their local SHA-256 digests before publication. The updater selects only the asset named exactly `ScreenshotTool.exe`, so the ZIP and setup executable cannot become update payloads. The application contains no authentication token; publication uses the workflow's `GITHUB_TOKEN`.
 
 ## Color
 

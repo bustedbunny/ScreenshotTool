@@ -1,0 +1,35 @@
+name: Validate packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test, and package
+        shell: pwsh
+        run: ./package.ps1
+      - name: Validate installer lifecycle
+        shell: pwsh
+        run: |
+          $source = Get-Content -LiteralPath CMakeLists.txt -Raw
+          if ($source -notmatch 'project\(ScreenshotTool VERSION ([0-9]+\.[0-9]+\.[0-9]+) ') { throw 'Project version was not found.' }
+          $version = $Matches[1]
+          ./scripts/test-installer.ps1 -InstallerPath "release-assets/ScreenshotTool-$version-windows-x64-setup.exe" -SourceDir dist -InstallerScript build/release-packaging/generated/ScreenshotTool.iss -IsccPath build/tools/InnoSetup-6.7.3/ISCC.exe -Version $version
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-validation
+          path: |
+            build/release-packaging/Testing/Temporary/LastTest.log
+            build/installer-validation/**
+          if-no-files-found: ignore

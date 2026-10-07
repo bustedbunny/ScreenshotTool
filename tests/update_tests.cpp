@@ -1,4 +1,5 @@
 #include "update.hpp"
+#include "installation.hpp"
 #include "settings.hpp"
 #include "export.hpp"
 #include "version.hpp"
@@ -50,6 +51,12 @@ void versionTests() {
         require(UpdateService::parseRelease(json(L"1.0"),version(L"1.1.0")).status==UpdateStatus::Current,"Never downgrade");
         for(auto flag:{L"\"draft\":false",L"\"prerelease\":false"})require(UpdateService::parseRelease(replaced(json(),flag,replaced(std::wstring(flag),L"false",L"true")),version(L"1.0")).status==UpdateStatus::Current,"Ignore unpublished and prerelease builds");
     });
+    test("portable and installer release assets do not change executable update selection",[]{
+        const auto data=replaced(json(L"v1.3.0"),L"\"assets\":[",L"\"assets\":[{\"name\":\"ScreenshotTool-1.3.0-windows-x64.zip\"},{\"name\":\"ScreenshotTool-1.3.0-windows-x64-setup.exe\"},");
+        const auto result=UpdateService::parseRelease(data,version(L"1.2.0"));
+        require(result.status==UpdateStatus::Available && result.release->version==version(L"1.3.0"),"Select exact executable after other distributions");
+        require(result.release->assetUrl.ends_with(L"/ScreenshotTool.exe") && result.release->sha256==L"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","Retain raw executable URL and digest");
+    });
     test("asset requirements retain a manual release URL",[]{
         for(auto data:{json(L"v1.1.0",L""),json(L"v1.1.0",L"sha256:bad"),replaced(json(),L"\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",L"\"digest\":null"),replaced(json(),L"577024",L"67108865"),replaced(json(),L"ScreenshotTool.exe\",\"state",L"other.exe\",\"state"),replaced(json(),L"\"uploaded\"",L"\"new\""),replaced(json(),L"https://github.com/bustedbunny/ScreenshotTool/releases/download/",L"http://github.com/bustedbunny/ScreenshotTool/releases/download/")}) {
             const auto result=UpdateService::parseRelease(data,version(L"1.0"));require(result.status==UpdateStatus::Incompatible && result.release && !result.release->releaseUrl.empty(),"Offer manual fallback");
@@ -84,7 +91,7 @@ void verificationTests() {
     test("download verification checks size digest architecture identity and version",[]{
         Folder folder;const auto path=folder.path/L"download.exe";copyFixture(path);auto release=fixtureRelease(path);UpdateService::verify(release,path);
         auto wrong=release;wrong.size++;rejects([&]{UpdateService::verify(wrong,path);});wrong=release;wrong.sha256[0]=wrong.sha256[0]==L'0'?L'1':L'0';rejects([&]{UpdateService::verify(wrong,path);});
-        wrong=release;wrong.version=version(L"1.2.0");rejects([&]{UpdateService::verify(wrong,path);});
+        wrong=release;wrong.version.parts[2]=(wrong.version.parts[2]+1)%65536;rejects([&]{UpdateService::verify(wrong,path);});
         std::stop_source stop;stop.request_stop();rejects([&]{UpdateService::verify(release,path,stop.get_token());});
         {std::fstream file(path,std::ios::binary|std::ios::in|std::ios::out);IMAGE_DOS_HEADER dos{};file.read(reinterpret_cast<char*>(&dos),sizeof(dos));file.seekp(dos.e_lfanew+sizeof(DWORD));WORD machine=IMAGE_FILE_MACHINE_I386;file.write(reinterpret_cast<char*>(&machine),sizeof(machine));}
         release=fixtureRelease(path);rejects([&]{UpdateService::verify(release,path);});
@@ -110,6 +117,16 @@ void verificationTests() {
     });
 }
 void transactionTests() {
+    test("update operation lock rejects concurrent helpers and running setup",[]{
+        const auto operationName=L"Local\\ScreenshotTool.UpdateOperation.Test-"+uniqueToken(),setupName=L"Local\\ScreenshotTool.Setup.Test-"+uniqueToken();
+        auto operation=UpdateServiceTestAccess::beginOperation(operationName.c_str(),setupName.c_str());
+        rejects([&]{UpdateServiceTestAccess::beginOperation(operationName.c_str(),setupName.c_str());});
+        {UniqueHandle visible(OpenMutexW(SYNCHRONIZE,FALSE,operationName.c_str()));require(visible!=nullptr,"Rejected helper leaves the first operation lock alive");}
+        operation.reset();UniqueHandle setup(CreateMutexW(nullptr,FALSE,setupName.c_str()));wincheck(setup!=nullptr,"Create disposable setup mutex");
+        rejects([&]{UpdateServiceTestAccess::beginOperation(operationName.c_str(),setupName.c_str());});
+        {UniqueHandle leaked(OpenMutexW(SYNCHRONIZE,FALSE,operationName.c_str()));require(!leaked && GetLastError()==ERROR_FILE_NOT_FOUND,"Installer-first rejection releases its operation lock");}
+        setup.reset();operation=UpdateServiceTestAccess::beginOperation(operationName.c_str(),setupName.c_str());require(operation!=nullptr,"Operation proceeds after setup exits");
+    });
     test("replacement succeeds and removes its backup",[]{
         Folder folder;PreparedUpdate update;update.target=folder.path/L"app.exe";update.replacement=folder.path/L"new.exe";update.backup=folder.path/L"backup.exe";
         write(update.target,"old");write(update.replacement,"new");bool started=false;UpdateService::replaceAndRestart(update,[&]{started=true;require(read(update.target)=="new","Restart sees replacement");});
@@ -140,11 +157,14 @@ void transactionTests() {
         require(std::filesystem::exists(running) && WaitForSingleObject(parent.get(),0)==WAIT_TIMEOUT,"Prepare against a running portable executable");
         auto prepared=UpdateService::prepare(fixtureRelease(download),download,target,{});const auto helper=prepared.helperDirectory;
         UpdateService::launchHelper(prepared,parent.get());
+        {UniqueHandle operation(OpenMutexW(SYNCHRONIZE,FALSE,UpdateOperationMutex));require(operation!=nullptr,"Ready helper holds the installer-visible update operation lock");}
+        auto exitMarker=target;exitMarker+=L".exit";write(exitMarker,"exit");
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(20);
         auto marker=target;marker+=L".started";
         while(std::chrono::steady_clock::now()<deadline && (!std::filesystem::exists(marker) || std::filesystem::exists(helper)))std::this_thread::sleep_for(std::chrono::milliseconds(50));
         require(std::filesystem::exists(marker),"New executable reached startup acknowledgement");
         require(UpdateService::sha256(target)==UpdateService::sha256(download),"Installed downloaded bytes");require(!std::filesystem::exists(helper),"Post-update startup removes temporary helper");
+        {UniqueHandle operation(OpenMutexW(SYNCHRONIZE,FALSE,UpdateOperationMutex));require(!operation && GetLastError()==ERROR_FILE_NOT_FOUND,"Completed helper releases update operation lock");}
         require(WaitForSingleObject(parent.get(),0)==WAIT_OBJECT_0,"Replacement waited for parent exit");
     });
     test("helper rejects a target unrelated to its parent",[]{
@@ -154,10 +174,17 @@ void transactionTests() {
 }
 }
 #include "localization_tests.hpp"
+#include "installation_tests.hpp"
 int wmain(int argc,wchar_t** argv) {
     try {
         if(auto result=UpdateService::runHelper(argc,argv))return *result;
-        if(argc>1 && std::wstring_view(argv[1])==L"--fixture"){auto marker=UpdateService::executablePath();marker+=L".running";write(marker,"running");Sleep(2000);return 0;}
+        if(argc>1 && std::wstring_view(argv[1])==L"--fixture") {
+            auto marker=UpdateService::executablePath();marker+=L".running";write(marker,"running");
+            auto exitMarker=UpdateService::executablePath();exitMarker+=L".exit";
+            const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(25);
+            while(!std::filesystem::exists(exitMarker) && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            return std::filesystem::exists(exitMarker)?0:1;
+        }
         if(argc>1 && std::wstring_view(argv[1])==L"--update-started") {
             auto marker=UpdateService::executablePath();marker+=L".started";write(marker,"ready");UpdateService::finishStartup(argc,argv);return 0;
         }
@@ -166,7 +193,7 @@ int wmain(int argc,wchar_t** argv) {
             return result.status==UpdateStatus::Failed || result.status==UpdateStatus::RateLimited?1:0;
         }
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        localizationTests();versionTests();verificationTests();transactionTests();winrt::uninit_apartment();
+        localizationTests();installationTests();versionTests();verificationTests();transactionTests();winrt::uninit_apartment();
         std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

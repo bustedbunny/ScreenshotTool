@@ -1,4 +1,5 @@
 #include "update.hpp"
+#include "installation.hpp"
 #include "export.hpp"
 #include "version.hpp"
 #include <winhttp.h>
@@ -21,6 +22,14 @@ constexpr std::wstring_view DirectoryPrefix=L"ScreenshotTool-update-";
 struct Canceled : std::runtime_error { Canceled():std::runtime_error("Update canceled."){} };
 void cancellation(std::stop_token stop) {if(stop.stop_requested())throw Canceled{};}
 void requireUpdate(bool value,const char* message) {if(!value)throw std::runtime_error(message);}
+UniqueHandle beginOperation(const wchar_t* operationMutex,const wchar_t* setupMutex) {
+    UniqueHandle operation(CreateMutexW(nullptr,FALSE,operationMutex));const auto error=GetLastError();
+    if(!operation)check(HRESULT_FROM_WIN32(error),"Create update operation lock");
+    requireUpdate(error!=ERROR_ALREADY_EXISTS,"Another ScreenshotTool update is already running. Try again after it finishes.");
+    UniqueHandle setup(OpenMutexW(SYNCHRONIZE,FALSE,setupMutex));const auto setupError=GetLastError();
+    requireUpdate(!setup && setupError==ERROR_FILE_NOT_FOUND,"ScreenshotTool setup is running. Close setup before installing an update.");
+    return operation;
+}
 bool validDigest(std::wstring_view value) {
     return value.size()==64 && std::all_of(value.begin(),value.end(),[](wchar_t c){return (c>=L'0' && c<=L'9') || (c>=L'a' && c<=L'f');});
 }
@@ -369,7 +378,7 @@ void UpdateService::replaceAndRestart(const PreparedUpdate& update,const std::fu
 }
 std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv,Language language) {
     if(argc<2 || std::wstring_view(argv[1])!=L"--apply-update")return {};
-    PreparedUpdate update;bool parentExited=false,validated=false;
+    UniqueHandle operation;PreparedUpdate update;bool parentExited=false,validated=false;
     try {
         requireUpdate(argc==11,"Invalid update helper arguments.");
         UniqueHandle parent(argumentHandle(argv[2])),ready(argumentHandle(argv[3]));
@@ -380,7 +389,11 @@ std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv,Language lan
         requireUpdate(std::filesystem::equivalent(processPath(parent.get()),update.target),"Update parent does not match target.");
         const auto version=Version::parse(argv[9]);requireUpdate(version.has_value(),"Invalid update version.");
         update.release.version=*version;update.release.sha256=argv[8];update.release.size=decimal(argv[10]);
-        verify(update.release,update.replacement);validated=true;wincheck(SetEvent(ready.get()),"Confirm update helper readiness");
+        verify(update.release,update.replacement);
+        // Hold a separate lock across parent exit and replacement so Setup can
+        // detect the handoff without blocking the restarted app's singleton.
+        operation=beginOperation(UpdateOperationMutex,SetupOperationMutex);
+        validated=true;wincheck(SetEvent(ready.get()),"Confirm update helper readiness");
         requireUpdate(WaitForSingleObject(parent.get(),30000)==WAIT_OBJECT_0,"ScreenshotTool did not exit. The update was canceled.");parentExited=true;
         verify(update.release,update.replacement);
         replaceAndRestart(update,[&]{restartUpdated(update);});return 0;
@@ -395,6 +408,9 @@ std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv,Language lan
         if(parentExited && !update.target.empty() && !std::filesystem::exists(update.backup))try{restartUpdated(update);}catch(...){}
         return 1;
     }
+}
+UniqueHandle UpdateServiceTestAccess::beginOperation(const wchar_t* operationMutex,const wchar_t* setupMutex) {
+    return shot::beginOperation(operationMutex,setupMutex);
 }
 void UpdateService::finishStartup(int argc,wchar_t** argv) {
     for(int i=1;i<argc;++i) {

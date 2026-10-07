@@ -1,5 +1,11 @@
 # Validation record
 
+## Installer and portable release 1.2.0 - 2026-10-07
+
+The isolated MSVC x64 Release build in `build/release-packaging` passed **87 checks, 0 failed**: 51 in `ScreenshotToolTests` and 36 in `ScreenshotToolUpdateTests`. Coverage includes selection of the raw executable when portable and installer assets are also present, installed-only version metadata refresh, and setup/update locking across native helper replacement. PowerShell syntax, workflow YAML parsing, and `git diff --check` passed.
+
+Inno Setup 6.7.3 was provisioned under ignored `build/tools` after checking the pinned upstream SHA-256 and valid Pyrsys B.V. signature. The installer compiles with Windows 11/native x64 and per-user privilege requirements. The ZIP payload hashes and both executable versions are verified by `package.ps1`. Installer lifecycle checks run in the disposable Windows 2025 CI account before publication; local interactive installation under a separate non-admin account has not been performed.
+
 ## Apply settings without closing - 2026-10-07
 
 Release build succeeded with MSVC x64 in `build/apply-validation`. The fresh CTest run passed **77 checks, 0 failed**: 51 in `ScreenshotToolTests` and 26 in `ScreenshotToolUpdateTests`, in 7.35 seconds. `git diff --check` passed. The rebuilt executable is `build/apply-validation/Release/ScreenshotTool.exe`.

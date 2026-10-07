@@ -1,10 +1,26 @@
 # ScreenshotTool
 
-A portable Windows 11 x64 screenshot app with a system-tray icon, frozen desktop selection, annotation tools, and SDR/HDR exports. Built with C++20, Win32, Direct3D 11, Direct2D, DirectWrite, and Windows Imaging Component. No installer, administrator rights, third-party libraries, or Visual C++ runtime installation is required.
+A Windows 11 x64 screenshot app with a system-tray icon, frozen desktop selection, annotation tools, and SDR/HDR exports. Available as a per-user installer or portable package. Built with C++20, Win32, Direct3D 11, Direct2D, DirectWrite, and Windows Imaging Component. No administrator rights, third-party libraries, or Visual C++ runtime installation is required.
+
+## Install or run portable
+
+Download a package from [GitHub releases](https://github.com/bustedbunny/ScreenshotTool/releases/latest). Windows 11 build 22000 or later on native x64 hardware is required.
+
+| Package | Use |
+| --- | --- |
+| `ScreenshotTool-1.2.0-windows-x64-setup.exe` | Install for your Windows account, with a Start Menu shortcut and an optional desktop shortcut |
+| `ScreenshotTool-1.2.0-windows-x64.zip` | Extract the app and documentation to a writable folder and run `ScreenshotTool.exe` |
+| `ScreenshotTool.exe` | Standalone portable app; also used by the in-app updater |
+
+The installer defaults to `%LOCALAPPDATA%\Programs\ScreenshotTool` and reuses the installed directory for repairs and upgrades. It does not request elevation. Close ScreenshotTool before installing, repairing, upgrading, or uninstalling; the installer does not force-close an active capture. Same-version repair is supported; installing an older version over a newer executable is blocked. Interactive setup offers to launch the app when finished; silent setup never launches it.
+
+Launch at sign-in stays disabled on a fresh installation. If you already enabled it for a portable copy, installation points the existing entry at the installed executable. Uninstall through Windows **Installed apps**; settings and saved screenshots remain. The sign-in entry is removed only when it still points at that installation.
+
+The app and installer are unsigned, so Windows may show an unknown-publisher or SmartScreen prompt.
 
 ## Run
 
-Run `ScreenshotTool.exe` from the portable package (`dist` after building). It stays in the system tray. **Print Screen** starts a capture; launching a second instance also starts a capture in the existing instance.
+Launch ScreenshotTool from the Start Menu, or run `ScreenshotTool.exe` from the portable package (`dist` after building). It stays in the system tray. **Print Screen** starts a capture; launching a second instance also starts a capture in the existing instance.
 
 1. Press **Print Screen**, then drag to select a region. Captures are frozen before any overlay appears. **Pen** is selected automatically after the first completed region in each capture session, so you can draw immediately.
 2. Drag any of the crop's eight resize handles with **any tool**. A drag starting outside the crop replaces it with any tool active; **Select (V)** does nothing when dragged from inside. Crop handles and active text boxes keep priority over replacement. Empty or interrupted crop gestures restore the previous region. Crop resizes and replacements keep drawings anchored to the desktop and retain your selected tool.
@@ -69,7 +85,7 @@ Checks use the latest published stable release of [bustedbunny/ScreenshotTool](h
 
 Click the available-update tray notification or **Install update…**, then choose **Download and restart**. The app verifies the release asset's size, SHA-256 digest, Windows x64 format, application identity, and embedded version. Capture remains available during download; installation waits for an active screenshot session to finish. Update dialogs also wait until the app is idle.
 
-The update replaces only the executable at its current path, preserving settings, screenshots, and the sign-in entry. A temporary native helper waits for the app to exit, keeps a backup during replacement, and confirms the new app starts. Reported replacement or startup failures recover the old executable where possible. Administrator elevation is never requested. If the portable folder is protected or another program locks the executable, use **View GitHub releases** to download manually or move the app to a writable folder. ZIP documentation is refreshed by downloading the portable ZIP, rather than by executable updates.
+The update replaces only the executable at its current path, preserving settings, screenshots, and the sign-in entry. Installed copies refresh their version in Windows **Installed apps** after startup; portable copies leave installer registration alone. A temporary native helper waits for the app to exit, keeps a backup during replacement, and confirms the new app starts. Reported replacement or startup failures recover the old executable where possible. Administrator elevation is never requested. If the portable folder is protected or another program locks the executable, use **View GitHub releases** to download manually or move the app to a writable folder. Documentation is refreshed by downloading a new package, rather than by executable updates.
 
 Command-line entry point: `ScreenshotTool.exe --capture`.
 
@@ -87,7 +103,7 @@ From PowerShell in the source directory:
 .\build.ps1
 ```
 
-The script discovers CMake from Visual Studio when it is absent from PATH, builds Release, runs tests, and creates `dist\ScreenshotTool.exe` with documentation. It does not require an administrator shell.
+The script discovers CMake from Visual Studio when it is absent from PATH, builds Release in `build`, runs tests, and creates `dist\ScreenshotTool.exe` with documentation. It does not require an administrator shell. Use `-BuildDirectory` with a relative or absolute path to choose another build directory.
 
 Equivalent commands when CMake is on PATH:
 
@@ -98,11 +114,17 @@ ctest --preset release
 cmake --install build --config Release --prefix dist
 ```
 
-The build uses `/MT` in Release and `/MTd` in Debug. Only Windows system DLLs are dynamically imported. To create a ZIP package, run `cpack --config build/CPackConfig.cmake -C Release`.
+The build uses `/MT` in Release and `/MTd` in Debug. Only Windows system DLLs are dynamically imported. `build.ps1` does not require installer tooling. To create all three release packages, run:
+
+```powershell
+.\package.ps1
+```
+
+This builds Release in the separate `build/release-packaging` directory, runs tests, and writes the portable ZIP, installer, and standalone executable to `release-assets`. Use `-BuildDirectory` to select another packaging build directory. It provisions pinned Inno Setup 6.7.3 in the isolated `build/tools` directory after verifying the published SHA-256 checksum and Authenticode signature. It does not install Inno Setup system-wide. To create only a ZIP from an ordinary existing build, run `cpack --config build/CPackConfig.cmake -C Release`.
 
 ### Publishing releases
 
-Set the version in `CMakeLists.txt`, commit it on the default branch, and push a matching `vX.Y.Z` tag (for example, `v1.1.0`). CMake generates the application version, executable resources, manifest, and ZIP name from that value. The **Release** GitHub Actions workflow builds and tests on Windows 2022, uploads `ScreenshotTool.exe` and `ScreenshotTool-X.Y.Z-windows-x64.zip` to a draft release, verifies both assets, then publishes. An upload failure leaves the draft unpublished; rerunning can finish a draft but refuses to modify an already published release.
+Set the version in `CMakeLists.txt`, add release notes under `docs/releases`, commit on the default branch, and push a matching `vX.Y.Z` tag (for example, `v1.2.0`). CMake generates the application version, executable resources, manifest, and package versions from that value. The **Release** GitHub Actions workflow builds and tests on Windows 2025, checks installer behavior on the disposable runner, and validates package versions and payload hashes. It uploads `ScreenshotTool.exe`, `ScreenshotTool-X.Y.Z-windows-x64.zip`, and `ScreenshotTool-X.Y.Z-windows-x64-setup.exe` to a draft release, verifies all three GitHub SHA-256 asset digests, then publishes. A validation or upload failure leaves the release unpublished; rerunning can finish a draft but refuses to modify an already published release.
 
 The updater requires the uploaded asset to be named exactly `ScreenshotTool.exe`, with GitHub's `sha256:` asset digest. Numeric two-part tags such as the original `1.0` release remain readable, but workflow-created releases use three-part `vX.Y.Z` tags. No access token is stored in the application; the workflow uses its repository-scoped `GITHUB_TOKEN`.
 

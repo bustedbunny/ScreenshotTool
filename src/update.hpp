@@ -57,6 +57,9 @@ public:
     static std::filesystem::path executablePath();
     static void replaceAndRestart(const PreparedUpdate&, const std::function<void()>& restart);
 };
+struct UpdateServiceTestAccess {
+    static UniqueHandle beginOperation(const wchar_t* operationMutex,const wchar_t* setupMutex);
+};
 // Used for both helper and post-update startup arguments; shell-free quoting.
 std::wstring quoteArgument(std::wstring_view value);
 }

@@ -14,7 +14,8 @@ concurrency:
 
 jobs:
   release:
-    runs-on: windows-2022
+    runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Validate release version
@@ -27,19 +28,21 @@ jobs:
           $version = $Matches[1]
           if ($tag -cne "v$version") { throw "Tag $tag does not match project version $version." }
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
-      - name: Build and test
+      - name: Build, test, and package
         shell: pwsh
-        run: ./build.ps1
-      - name: Package and validate assets
+        run: ./package.ps1
+      - name: Validate installer lifecycle
         shell: pwsh
         run: |
-          cpack --config build/CPackConfig.cmake -C Release -B release-assets
-          if ($LASTEXITCODE -ne 0) { throw 'ZIP packaging failed.' }
-          Copy-Item -LiteralPath dist/ScreenshotTool.exe -Destination release-assets/ScreenshotTool.exe
-          $file = Get-Item -LiteralPath release-assets/ScreenshotTool.exe
-          if ($file.VersionInfo.FileVersion -cne $env:RELEASE_VERSION) { throw 'Executable version does not match the release.' }
-          $archive = "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip"
-          if (-not (Test-Path -LiteralPath $archive)) { throw 'Portable ZIP asset is missing.' }
+          ./scripts/test-installer.ps1 -InstallerPath "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64-setup.exe" -SourceDir dist -InstallerScript build/release-packaging/generated/ScreenshotTool.iss -IsccPath build/tools/InnoSetup-6.7.3/ISCC.exe -Version $env:RELEASE_VERSION
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-validation
+          path: |
+            build/release-packaging/Testing/Temporary/LastTest.log
+            build/installer-validation/**
+          if-no-files-found: ignore
       - name: Upload assets to draft and publish
         shell: pwsh
         env:
@@ -51,10 +54,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             if (-not ($existing | ConvertFrom-Json).isDraft) { throw 'Refusing to alter an already published release.' }
           } else {
-            gh release create $tag --repo $repo --verify-tag --draft --title $tag --generate-notes
+            gh release create $tag --repo $repo --verify-tag --draft --title "ScreenshotTool $env:RELEASE_VERSION" --notes-file "docs/releases/$env:RELEASE_VERSION.md"
             if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
           }
-          gh release upload $tag --repo $repo --clobber release-assets/ScreenshotTool.exe "release-assets/ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip"
+          $names = @('ScreenshotTool.exe', "ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip", "ScreenshotTool-$env:RELEASE_VERSION-windows-x64-setup.exe")
+          $paths = @($names | ForEach-Object { "release-assets/$_" })
+          gh release upload $tag --repo $repo --clobber @paths
           if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed; the release remains a draft.' }
           # Draft releases are only returned through the release collection, not the tag endpoint.
           $metadata = gh api "repos/$repo/releases?per_page=100" --paginate --slurp
@@ -66,11 +71,11 @@ jobs:
           )
           if ($matchingReleases.Count -ne 1 -or -not $matchingReleases[0].draft) { throw 'Expected one draft release before asset verification.' }
           $assets = $matchingReleases[0].assets
-          foreach ($name in @('ScreenshotTool.exe', "ScreenshotTool-$env:RELEASE_VERSION-windows-x64.zip")) {
-            $asset = $assets | Where-Object { $_.name -ceq $name -and $_.size -gt 0 }
-            if (-not $asset) { throw "Uploaded asset $name is missing or empty." }
+          foreach ($name in $names) {
+            $asset = @($assets | Where-Object { $_.name -ceq $name -and $_.size -gt 0 -and $_.state -ceq 'uploaded' })
+            if ($asset.Count -ne 1) { throw "Uploaded asset $name is missing, duplicate, or empty." }
             $hash = (Get-FileHash -LiteralPath "release-assets/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($asset.digest -cne "sha256:$hash") { throw "Uploaded asset $name has no matching SHA-256 digest." }
+            if ($asset[0].digest -cne "sha256:$hash" -or $asset[0].size -ne (Get-Item -LiteralPath "release-assets/$name").Length) { throw "Uploaded asset $name has no matching size and SHA-256 digest." }
           }
           gh release edit $tag --repo $repo --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }

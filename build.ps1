@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$SkipTests)
+param([switch]$SkipTests, [string]$BuildDirectory = 'build')
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $cmakeCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
@@ -12,15 +12,16 @@ if ($cmakeCommand) {
     $cmakePath = Join-Path $vsPath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
     if (-not (Test-Path -LiteralPath $cmakePath)) { throw 'Install the Visual Studio C++ CMake tools component, or put CMake on PATH.' }
 }
-& $cmakePath --preset windows-x64
+$buildPath = if ([IO.Path]::IsPathRooted($BuildDirectory)) { [IO.Path]::GetFullPath($BuildDirectory) } else { [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BuildDirectory)) }
+& $cmakePath --preset windows-x64 -B $buildPath
 if ($LASTEXITCODE -ne 0) { throw 'CMake configuration failed.' }
-& $cmakePath --build --preset release --parallel
+& $cmakePath --build $buildPath --config Release --parallel
 if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 if (-not $SkipTests) {
     $ctestPath = Join-Path (Split-Path -Parent $cmakePath) 'ctest.exe'
-    & $ctestPath --preset release
+    & $ctestPath --test-dir $buildPath -C Release --output-on-failure
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
 }
-& $cmakePath --install build --config Release --prefix dist
+& $cmakePath --install $buildPath --config Release --prefix dist
 if ($LASTEXITCODE -ne 0) { throw 'Portable package creation failed.' }
 Write-Host 'Portable app: dist\ScreenshotTool.exe'

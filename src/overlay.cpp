@@ -552,7 +552,7 @@ LRESULT OverlaySession::toolbarMessage(UINT msg,WPARAM wp,LPARAM lp) {
         RECT measured{0,0,std::max(1L,r.right-r.left),0};DrawTextW(item->hDC,label,-1,&measured,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX|DT_CALCRECT);
         r.top+=std::max(0L,(r.bottom-r.top-(measured.bottom-measured.top))/2);
         DrawTextW(item->hDC,label,-1,&r,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX);
-        if(item->itemState&ODS_FOCUS){InflateRect(&r,-3,-3);DrawFocusRect(item->hDC,&r);}SelectObject(item->hDC,old);return TRUE;
+        SelectObject(item->hDC,old);return TRUE;
     }
     case WM_DPICHANGED:placeToolbar();return 0;
     case WM_CLOSE:if(!busy_)action_(SessionAction::Cancel);return 0;

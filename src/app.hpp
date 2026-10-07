@@ -8,7 +8,7 @@
 namespace shot {
 class App {
 public:
-    explicit App(HINSTANCE instance);
+    App(HINSTANCE instance, Settings settings);
     ~App();
     int run(bool captureImmediately);
     static constexpr UINT CaptureMessage=WM_APP+1;
@@ -21,8 +21,9 @@ private:
     void endSession();
     void trayMenu();
     void addTray();
+    void refreshTrayLanguage();
     void notify(const std::wstring& text,bool error=false);
-    void error(const std::wstring& text);
+    void error(const Message& message, TextId guidance = TextId::Count);
     void captureFinished(LPARAM data);
     void exportFinished(LPARAM data);
     void checkUpdates(bool manual);
@@ -36,6 +37,7 @@ private:
     std::jthread keyboardThread_;DWORD keyboardThreadId_{};
     UINT taskbarCreated_{};bool trayAdded_{},exiting_{};
     SessionState state_;PrintScreenGate gate_;Settings settings_;
+    Language language_{Language::English};
     std::jthread worker_;unsigned generation_{};
     std::jthread updateWorker_;
     bool updateBusy_{},manualUpdateCheck_{},updateBalloon_{},pendingUpdateNotification_{},pendingUpdatePrompt_{},dialogOpen_{},updateHandoff_{};

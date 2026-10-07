@@ -176,7 +176,7 @@ void restartUpdated(const PreparedUpdate& update) {
     const auto result=WaitForMultipleObjects(static_cast<DWORD>(waits.size()),waits.data(),FALSE,15000);
     if(result!=WAIT_OBJECT_0) {
         TerminateProcess(child.process.get(),1);WaitForSingleObject(child.process.get(),5000);
-        throw std::runtime_error("The updated application did not start. Restoring the previous executable.");
+        throw AppError(TextId::UpdateStartupFailed);
     }
 }
 }
@@ -217,15 +217,15 @@ UpdateCheckResult UpdateService::parseRelease(std::wstring_view json,Version ins
     UpdateCheckResult result;
     try {
         winrt::Windows::Data::Json::JsonObject object;
-        if(!winrt::Windows::Data::Json::JsonObject::TryParse(winrt::hstring(json),object))throw std::runtime_error("GitHub returned malformed release metadata.");
-        if(object.GetNamedBoolean(L"draft") || object.GetNamedBoolean(L"prerelease"))return {UpdateStatus::Current,{},L"No newer stable release is available."};
+        if(!winrt::Windows::Data::Json::JsonObject::TryParse(winrt::hstring(json),object))throw AppError(TextId::MalformedMetadata);
+        if(object.GetNamedBoolean(L"draft") || object.GetNamedBoolean(L"prerelease"))return {UpdateStatus::Current,{},{TextId::NoNewRelease}};
         const auto version=Version::parse(object.GetNamedString(L"tag_name").c_str());
         requireUpdate(version.has_value(),"GitHub release tag is not a supported numeric version.");
-        if(*version<=installed)return {UpdateStatus::Current,{},L"ScreenshotTool is up to date."};
+        if(*version<=installed)return {UpdateStatus::Current,{},{TextId::UpToDate}};
         ReleaseInfo release;release.version=*version;release.releaseUrl=object.GetNamedString(L"html_url").c_str();
         requireUpdate(release.releaseUrl.starts_with(ReleasePrefix),"Unexpected GitHub release URL.");
         result.status=UpdateStatus::Incompatible;result.release=release;
-        result.message=L"A newer release is available, but it has no compatible update asset. Open its release page to install manually.";
+        result.message={TextId::IncompatibleRelease};
         const auto assets=object.GetNamedArray(L"assets");bool found=false;
         for(const auto& value:assets) {
             const auto asset=value.GetObject();
@@ -241,20 +241,20 @@ UpdateCheckResult UpdateService::parseRelease(std::wstring_view json,Version ins
             const std::wstring hash=digest.GetString().c_str();
             if(!hash.starts_with(L"sha256:"))continue;release.sha256=hash.substr(7);
             if(!validDigest(release.sha256) || !release.assetUrl.starts_with(AssetPrefix))continue;
-            result.status=UpdateStatus::Available;result.release=release;result.message=L"ScreenshotTool "+version->text()+L" is available.";
+            result.status=UpdateStatus::Available;result.release=release;result.message={TextId::ReleaseAvailable,{version->text()}};
         }
         return result;
-    }catch(const winrt::hresult_error&) {result.status=UpdateStatus::Failed;result.message=L"GitHub returned invalid release metadata.";return result;}
-    catch(const std::exception& error){result.status=UpdateStatus::Failed;result.message=widen(error.what());return result;}
+    }catch(const winrt::hresult_error&) {result.status=UpdateStatus::Failed;result.message={TextId::InvalidMetadata};return result;}
+    catch(const std::exception& error){result.status=UpdateStatus::Failed;result.message=errorMessage(error,TextId::UpdateFailed);return result;}
 }
 UpdateCheckResult UpdateService::httpFailure(unsigned status,std::wstring_view retryAfter) {
-    if(status==404)return {UpdateStatus::NoRelease,{},L"No published release is available yet."};
+    if(status==404)return {UpdateStatus::NoRelease,{},{TextId::NoRelease}};
     if(status==403 || status==429) {
         unsigned seconds=3600;
         try{if(!retryAfter.empty())seconds=static_cast<unsigned>(std::clamp<uint64_t>(decimal(retryAfter),1,86400));}catch(...){}
-        return {UpdateStatus::RateLimited,{},L"GitHub has limited update requests. Try again later.",seconds};
+        return {UpdateStatus::RateLimited,{},{TextId::RateLimited},seconds};
     }
-    return {UpdateStatus::Failed,{},L"GitHub update request failed (HTTP "+std::to_wstring(status)+L")."};
+    return {UpdateStatus::Failed,{},{TextId::HttpFailure,{std::to_wstring(status)}}};
 }
 UpdateCheckResult UpdateService::check(std::stop_token stop) {
     try {
@@ -263,9 +263,9 @@ UpdateCheckResult UpdateService::check(std::stop_token stop) {
         auto response=request(L"https://api.github.com/repos/bustedbunny/ScreenshotTool/releases/latest",MaxMetadataSize,stop);
         if(response.status!=200)return httpFailure(response.status,response.retryAfter);
         return parseRelease(widen(response.body),*Version::parse(AppVersion));
-    }catch(const Canceled&){return {UpdateStatus::Canceled,{},L"Update check canceled."};}
-    catch(const winrt::hresult_error&){return {UpdateStatus::Failed,{},L"Could not initialize the Windows release parser."};}
-    catch(const std::exception& error){return {UpdateStatus::Failed,{},widen(error.what())};}
+    }catch(const Canceled&){return {UpdateStatus::Canceled,{},{TextId::UpdateCanceled}};}
+    catch(const winrt::hresult_error&){return {UpdateStatus::Failed,{},{TextId::ParserFailed}};}
+    catch(const std::exception& error){return {UpdateStatus::Failed,{},errorMessage(error,TextId::UpdateFailed)};}
 }
 std::filesystem::path UpdateService::executablePath() {return processPath(GetCurrentProcess());}
 std::wstring UpdateService::sha256(const std::filesystem::path& path,std::stop_token stop) {
@@ -328,7 +328,7 @@ PreparedUpdate UpdateService::download(const ReleaseInfo& release,const std::fil
     struct Cleanup {std::filesystem::path path;~Cleanup(){cleanupDirectory(path);}}cleanup{directory};
     const auto path=directory/L"download.exe";
     const auto response=request(release.assetUrl,static_cast<size_t>(release.size),stop,path);
-    if(response.status!=200)throw std::runtime_error("The update download failed (HTTP "+std::to_string(response.status)+").");
+    if(response.status!=200)throw AppError(TextId::DownloadHttpFailure,{std::to_wstring(response.status)});
     return prepare(release,path,target,stop);
 }
 void UpdateService::launchHelper(PreparedUpdate& update,HANDLE parent) {
@@ -341,7 +341,7 @@ void UpdateService::launchHelper(PreparedUpdate& update,HANDLE parent) {
     std::array<HANDLE,2> waits{ready.get(),child.process.get()};
     if(WaitForMultipleObjects(static_cast<DWORD>(waits.size()),waits.data(),FALSE,15000)!=WAIT_OBJECT_0) {
         TerminateProcess(child.process.get(),1);WaitForSingleObject(child.process.get(),5000);
-        throw std::runtime_error("The update helper could not initialize. ScreenshotTool will keep running.");
+        throw AppError(TextId::HelperInitializeFailed);
     }
     update.releaseOwnership();
 }
@@ -359,7 +359,7 @@ void UpdateService::replaceAndRestart(const PreparedUpdate& update,const std::fu
         // ReplaceFile can partially rename files on failure. Restore the
         // original whenever it reached the backup path.
         if(std::filesystem::exists(update.backup))wincheck(MoveFileExW(update.backup.c_str(),update.target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH),"Recover failed update replacement");
-        throw std::runtime_error("Could not replace ScreenshotTool. The previous executable was retained.");
+        throw AppError(TextId::ReplaceFailed);
     }
     try{restart();}
     catch(...) {
@@ -367,7 +367,7 @@ void UpdateService::replaceAndRestart(const PreparedUpdate& update,const std::fu
     }
     removeFile(update.backup);
 }
-std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv) {
+std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv,Language language) {
     if(argc<2 || std::wstring_view(argv[1])!=L"--apply-update")return {};
     PreparedUpdate update;bool parentExited=false,validated=false;
     try {
@@ -386,9 +386,9 @@ std::optional<int> UpdateService::runHelper(int argc,wchar_t** argv) {
         replaceAndRestart(update,[&]{restartUpdated(update);});return 0;
     }catch(const std::exception& error) {
         if(!validated)update.releaseOwnership(); // Do not clean paths supplied by an invalid command line.
-        auto message=widen(error.what())+L"\n\nYou can download the release manually from GitHub.";
-        if(validated && std::filesystem::exists(update.backup))message+=L"\n\nPrevious executable backup: "+update.backup.wstring();
-        MessageBoxW(nullptr,message.c_str(),L"ScreenshotTool update",MB_OK|MB_ICONERROR);
+        auto message=errorMessage(error,TextId::UpdateFailed).render(language,TextId::ManualInstallHelp);
+        if(validated && std::filesystem::exists(update.backup))message+=L"\n\n"+format(language,TextId::BackupHelp,{update.backup.wstring()});
+        MessageBoxW(nullptr,message.c_str(),text(language,TextId::UpdateTitle).data(),MB_OK|MB_ICONERROR);
         // Acknowledged restart also lets the recovered app clean the helper
         // after it exits. Report the failure first so cleanup never waits for
         // an error dialog that can remain open indefinitely.

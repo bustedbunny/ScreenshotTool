@@ -23,7 +23,7 @@ std::vector<BYTE> encode(const Image& image,bool hdr) {
     // matches desktop duplication and is losslessly supported by the Windows codec.
     WICPixelFormatGUID requested=hdr?GUID_WICPixelFormat64bppRGBAHalf:GUID_WICPixelFormat32bppBGRA;
     auto actual=requested;check(frame->SetPixelFormat(&actual),"Set image pixel format");
-    if(actual!=requested)throw std::runtime_error("The Windows codec cannot preserve the requested image format. Repair the Windows image codecs and retry.");
+    if(actual!=requested)throw AppError(TextId::CodecFormat);
     if(!hdr) {
         ComPtr<IWICMetadataQueryWriter> metadata;check(frame->GetMetadataQueryWriter(&metadata),"Tag PNG as sRGB");
         PROPVARIANT intent{};intent.vt=VT_UI1;intent.bVal=0;
@@ -46,21 +46,21 @@ std::vector<BYTE> encode(const Image& image,bool hdr) {
         bytes=reinterpret_cast<const BYTE*>(half.data());stride=image.width*8;
     }
     const uint64_t byteCount=static_cast<uint64_t>(stride)*image.height;
-    if(byteCount>MAXUINT)throw std::runtime_error("The selected image is too large for the Windows image codec.");
+    if(byteCount>MAXUINT)throw AppError(TextId::ImageTooLarge);
     check(frame->WritePixels(image.height,stride,static_cast<UINT>(byteCount),const_cast<BYTE*>(bytes)),"Encode selected pixels");
     check(frame->Commit(),"Finish image frame");check(encoder->Commit(),"Finish image encoding");
     STATSTG stat{};check(stream->Stat(&stat,STATFLAG_NONAME),"Read encoded image size");
-    if(stat.cbSize.QuadPart>MAXUINT)throw std::runtime_error("Encoded image is too large.");
+    if(stat.cbSize.QuadPart>MAXUINT)throw AppError(TextId::EncodedTooLarge);
     std::vector<BYTE> result(static_cast<size_t>(stat.cbSize.QuadPart));LARGE_INTEGER start{};
     check(stream->Seek(start,STREAM_SEEK_SET,nullptr),"Read encoded image");ULONG read{};
     check(stream->Read(result.data(),static_cast<ULONG>(result.size()),&read),"Read encoded image");
-    if(read!=result.size())throw std::runtime_error("The encoded image stream is incomplete.");return result;
+    if(read!=result.size())throw AppError(TextId::IncompleteStream);return result;
 }
 struct GlobalDelete { void operator()(void* p) const {if(p)GlobalFree(p);} };
 using GlobalMemory=std::unique_ptr<void,GlobalDelete>;
 GlobalMemory globalCopy(const void* data,size_t size) {
     GlobalMemory memory(GlobalAlloc(GMEM_MOVEABLE,size));if(!memory)throw std::bad_alloc();
-    void* ptr=GlobalLock(memory.get());if(!ptr)throw std::runtime_error("Cannot allocate clipboard image.");
+    void* ptr=GlobalLock(memory.get());if(!ptr)throw AppError(TextId::ClipboardAllocation);
     std::memcpy(ptr,data,size);GlobalUnlock(memory.get());return memory;
 }
 }
@@ -87,7 +87,7 @@ void writeNewFile(const std::filesystem::path& path,std::span<const BYTE> bytes)
     HANDLE raw=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(raw==INVALID_HANDLE_VALUE)check(HRESULT_FROM_WIN32(GetLastError()),"Create screenshot file. Check the folder's permissions and available space");
     UniqueHandle file(raw);size_t position=0;
-    while(position<bytes.size()) {DWORD count{},chunk=static_cast<DWORD>(std::min<size_t>(bytes.size()-position,16*1024*1024));wincheck(WriteFile(file.get(),bytes.data()+position,chunk,&count,nullptr),"Write screenshot file");if(count==0)throw std::runtime_error("The screenshot file could not be fully written.");position+=count;}
+    while(position<bytes.size()) {DWORD count{},chunk=static_cast<DWORD>(std::min<size_t>(bytes.size()-position,16*1024*1024));wincheck(WriteFile(file.get(),bytes.data()+position,chunk,&count,nullptr),"Write screenshot file");if(count==0)throw AppError(TextId::IncompleteWrite);position+=count;}
     wincheck(FlushFileBuffers(file.get()),"Flush screenshot file to disk");
 }
 FileOperations nativeFileOperations() {
@@ -102,7 +102,7 @@ std::vector<std::filesystem::path> ExportService::quickSave(const EncodedImage& 
         if(file!=INVALID_HANDLE_VALUE){reservation.reset(file);break;}
         if(GetLastError()!=ERROR_FILE_EXISTS && GetLastError()!=ERROR_ALREADY_EXISTS)check(HRESULT_FROM_WIN32(GetLastError()),"Reserve screenshot filename");
     }
-    if(!reservation)throw std::runtime_error("Could not reserve a unique screenshot filename. Retry saving.");
+    if(!reservation)throw AppError(TextId::UniqueFilename);
     const auto token=uniqueToken();std::vector<StagedFile> files;
     auto add=[&](std::wstring suffix,const std::vector<BYTE>& bytes) {
         auto final=directory/(stem+suffix);auto temp=directory/(L"."+stem+token+suffix+L".tmp");
@@ -119,9 +119,9 @@ void ExportService::saveAs(const EncodedImage& image,const std::filesystem::path
         else wincheck(MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_WRITE_THROUGH),"Finalize screenshot file");
     } catch(...) {std::error_code ignored;std::filesystem::remove(temporary,ignored);throw;}
 }
-std::optional<std::filesystem::path> ExportService::chooseSavePath(HWND owner,const std::filesystem::path& folder) {
+std::optional<std::filesystem::path> ExportService::chooseSavePath(HWND owner,const std::filesystem::path& folder,Language language) {
     ComPtr<IFileSaveDialog> dialog;check(CoCreateInstance(CLSID_FileSaveDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)),"Open Save As dialog");
-    COMDLG_FILTERSPEC filter{L"PNG image (*.png)",L"*.png"};check(dialog->SetFileTypes(1,&filter),"Set save file type");
+    COMDLG_FILTERSPEC filter{text(language,TextId::PngFilter).data(),L"*.png"};check(dialog->SetFileTypes(1,&filter),"Set save file type");
     check(dialog->SetDefaultExtension(L"png"),"Set PNG extension");check(dialog->SetFileName((currentStem()+L"_SDR.png").c_str()),"Set screenshot filename");
     DWORD options{};check(dialog->GetOptions(&options),"Read Save As options");check(dialog->SetOptions(options|FOS_FORCEFILESYSTEM|FOS_OVERWRITEPROMPT|FOS_PATHMUSTEXIST|FOS_STRICTFILETYPES),"Configure Save As dialog");
     ComPtr<IShellItem> item;if(SUCCEEDED(SHCreateItemFromParsingName(folder.c_str(),nullptr,IID_PPV_ARGS(&item))))dialog->SetDefaultFolder(item.Get());
@@ -145,6 +145,6 @@ void ExportService::copy(HWND owner,const EncodedImage& image) {
     wincheck(EmptyClipboard(),"Take clipboard ownership");
     auto transfer=[](UINT format,GlobalMemory& memory){if(!SetClipboardData(format,memory.get()))check(HRESULT_FROM_WIN32(GetLastError()),"Place image on clipboard");memory.release();};
     transfer(CF_DIBV5,v5);transfer(CF_DIB,v3);transfer(pngFormat,png);
-    if(GetClipboardOwner()!=owner)throw std::runtime_error("Another application took the clipboard. Retry Copy.");
+    if(GetClipboardOwner()!=owner)throw AppError(TextId::ClipboardTaken);
 }
 }

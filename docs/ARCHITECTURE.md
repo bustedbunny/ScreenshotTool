@@ -12,10 +12,15 @@
 | `text_store.hpp`, `text_store.cpp` | STA ITextStoreACP, TSF lock protocol, input routing, composition lifecycle, screen-space caret extents |
 | `export.hpp`, `export.cpp` | PNG/JPEG XR encoding, clipboard ownership, native Save As, collision-safe quick saves, staged writes |
 | `settings.hpp`, `settings.cpp` | Per-user settings and optional sign-in registry entry |
+| `localization.hpp`, `localization.cpp` | Embedded six-language catalogs, Windows display-language resolution, Unicode message formatting, locale UI fonts and structured errors |
 | `update.hpp`, `update.cpp` | GitHub release metadata, cancellable HTTPS, executable verification, native helper handoff and recoverable replacement |
 | `app.hpp`, `app.cpp`, `main.cpp` | Single-instance mutex, tray, low-level keyboard hook, message loop, worker lifetimes and session state |
 
 ## Sessions and threads
+
+The language preference is `auto`, `en`, `ru`, `zh-Hans`, `ja`, `de`, or `es` in the existing per-user settings file. Automatic resolves the primary Windows UI language, including regional variants, with English fallback. The controller applies confirmed changes while idle and refreshes the tray; each new overlay snapshots the effective language. Dialog paragraphs and toolbar groups use measured text and DPI-aware layouts. Windows-owned dialogs retain Windows' display language.
+
+Background completions own message IDs, arguments and diagnostic text rather than translated strings. The UI renders them in its current language, including when Settings changes during an update check. Actionable exceptions carry catalog IDs and preserve English `what()` diagnostics; other exceptions receive translated context with their original details. Recovery instructions precede technical details so shortened tray notifications retain guidance. Startup reads language preferences before updater-helper handling, with a system-language fallback if settings loading fails.
 
 The controller transitions `Idle → Capturing → Editing → Exporting → Idle`. Export failures return to `Editing`; canceling Save As retains the document. Capture and encoding/disk work run in a `std::jthread`, with completion posted to the controller window. Capture cancellation is checked between bounded duplication waits. Generation identifiers discard stale worker completions after cancellation/display changes. A dedicated keyboard thread runs its own message pump; callbacks only update the Print Screen gate and post a capture request, so UI rendering and modal dialogs cannot delay the hook.
 

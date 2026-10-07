@@ -13,7 +13,7 @@ Graphics::Graphics(std::optional<std::int64_t> luid,bool software) {
         std::int64_t value{};std::memcpy(&value,&desc.AdapterLuid,sizeof(value));
         if(value==*luid) {adapter=candidate;break;}
     }
-    if(luid && !adapter)throw std::runtime_error("The display adapter disconnected. Capture again.");
+    if(luid && !adapter)throw AppError(TextId::AdapterDisconnected);
     HRESULT hr=D3D11CreateDevice(adapter.Get(),adapter?D3D_DRIVER_TYPE_UNKNOWN:(software?D3D_DRIVER_TYPE_WARP:D3D_DRIVER_TYPE_HARDWARE),nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device_,nullptr,&immediate_);
     if(FAILED(hr) && !adapter && !software)
         hr=D3D11CreateDevice(nullptr,D3D_DRIVER_TYPE_WARP,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device_,nullptr,&immediate_);
@@ -61,7 +61,7 @@ Image Graphics::readback(ID2D1Bitmap1* bitmap) {
         else if(format.format==DXGI_FORMAT_R16G16B16A16_FLOAT)for(UINT x=0;x<size.width;++x) {
             const auto p=reinterpret_cast<const DirectX::PackedVector::HALF*>(row)+x*4;
             result.at(x,y)={DirectX::PackedVector::XMConvertHalfToFloat(p[0]),DirectX::PackedVector::XMConvertHalfToFloat(p[1]),DirectX::PackedVector::XMConvertHalfToFloat(p[2]),1};
-        } else throw std::runtime_error("Unexpected rendering pixel format.");
+        } else throw AppError(TextId::PixelFormat);
     }
     return result;
 }
@@ -185,7 +185,7 @@ void Graphics::present(ID2D1Bitmap1* background,Rect monitor,Rect selection,std:
     check(swapchain_->Present(1,0),"Present overlay. The graphics device may have disconnected; capture again");
 }
 void Graphics::drawPreview(ID2D1Bitmap1* output,ID2D1Bitmap1* background,Rect monitor,Rect selection,std::span<const Annotation> annotations,const Annotation* draft,float white,bool handles,const InlineText* text,bool caretVisible) {
-    if(!factory_->IsCurrent())throw std::runtime_error("Display configuration changed. Capture again.");
+    if(!factory_->IsCurrent())throw AppError(TextId::DisplayConfigurationChanged);
     context_->SetTarget(output);context_->SetTransform(D2D1::Matrix3x2F::Identity());context_->BeginDraw();
     context_->DrawBitmap(background,nullptr,1,D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     check(context_->EndDraw(),"Draw frozen desktop");

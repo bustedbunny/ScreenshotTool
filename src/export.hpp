@@ -10,7 +10,7 @@ public:
     static std::vector<BYTE> toBgra(const Image& linear);
     static std::vector<std::filesystem::path> quickSave(const EncodedImage& image,const std::filesystem::path& directory);
     static void saveAs(const EncodedImage& image,const std::filesystem::path& path);
-    static std::optional<std::filesystem::path> chooseSavePath(HWND owner,const std::filesystem::path& folder);
+    static std::optional<std::filesystem::path> chooseSavePath(HWND owner,const std::filesystem::path& folder,Language language = Language::English);
     static void copy(HWND owner,const EncodedImage& image);
 };
 std::filesystem::path picturesDirectory();

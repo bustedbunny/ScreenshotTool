@@ -11,10 +11,10 @@ void withDesktopFrame(std::stop_token stop, Acquire acquire, Release release, Co
     using namespace std::chrono;
     const auto deadline=now()+seconds(4);
     for(;;) {
-        if(stop.stop_requested())throw std::runtime_error("Capture canceled.");
+        if(stop.stop_requested())throw AppError(TextId::CaptureCanceled);
         const auto remaining=deadline-now();
         if(remaining<=decltype(remaining)::zero())
-            throw std::runtime_error("Timed out waiting for a desktop image. Unlock Windows and capture again.");
+            throw AppError(TextId::CaptureTimeout);
         const auto wait=std::min(milliseconds(100),ceil<milliseconds>(remaining));
         DXGI_OUTDUPL_FRAME_INFO info{};
         const HRESULT hr=acquire(static_cast<UINT>(wait.count()),info);
@@ -25,9 +25,9 @@ void withDesktopFrame(std::stop_token stop, Acquire acquire, Release release, Co
             Release& release;
             ~FrameRelease(){release();}
         } guard{release};
-        if(stop.stop_requested())throw std::runtime_error("Capture canceled.");
+        if(stop.stop_requested())throw AppError(TextId::CaptureCanceled);
         if(info.ProtectedContentMaskedOut)
-            throw std::runtime_error("Windows hid protected content in this capture. Close the protected window and capture again.");
+            throw AppError(TextId::ProtectedContent);
         // AcquireNextFrame also succeeds for cursor-only updates. A fresh
         // duplication session must wait for an actual desktop-image update.
         if(info.LastPresentTime.QuadPart==0)continue;

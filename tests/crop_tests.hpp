@@ -24,7 +24,7 @@ struct CropTestAccess {
     }
     static void tests() {
         test("crop resize handles and cursors work with every tool without region movement",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected overlay error");});prepare(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected overlay error");});prepare(s);
             struct Case {Point point;Handle handle;Rect resized;LPCWSTR cursor;};
             const Case cases[]{
                 {{500,400},Handle::NW,{540,430,900,800},IDC_SIZENWSE},{{700,400},Handle::N,{500,430,900,800},IDC_SIZENS},
@@ -47,7 +47,7 @@ struct CropTestAccess {
             s.busy_=true;require(s.cursorAt({500,400})==IDC_WAIT,"Export busy cursor wins over crop handles");
         });
         test("every tool replaces crop from outside and restores empty or interrupted gestures",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){});prepare(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](Message){});prepare(s);
             s.history_.add(shape(Tool::Line,{600,500},{1000,900}));const auto points=s.history_.visible()[0].points;
             const std::pair<Point,Point> drags[]{{{200,200},{1000,900}},{{1200,200},{300,900}},{{200,1000},{1000,200}},{{1200,1000},{300,200}}};
             for(int tool=0;tool<9;++tool) {
@@ -81,7 +81,7 @@ struct CropTestAccess {
             s.mouseUp({1600,600});require(s.selection_==Rect{1200,200,1600,600} && s.tool_==Tool::Pen && s.history_.visible().empty() && IsWindowVisible(s.toolbar_),"First replacement preserves automatic Pen and creates no ink");
         });
         test("drawing tools started inside can cross crop and survive crop changes",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){});prepare(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](Message){});prepare(s);
             for(const Tool tool:{Tool::Pen,Tool::Highlighter,Tool::Rectangle,Tool::Ellipse,Tool::Line,Tool::Arrow,Tool::Censor}) {
                 s.selection_=crop;s.tool_=tool;s.history_.clear();s.mouseDown(s.owner(),{600,500});
                 require(s.draft_ && s.draft_->points.front()==Point{600,500} && !s.selecting_ && IsWindowVisible(s.toolbar_),"Inside drawing starts while toolbar remains visible");
@@ -95,7 +95,7 @@ struct CropTestAccess {
             }
         });
         test("outside text editing uses desktop bounds and crop handles take priority",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
             s.mouseDown(s.owner(),{600,500});require(s.text_.active() && s.text_.annotation().textBounds->width()==300 && IsWindowVisible(s.toolbar_),"Text starts inside crop with desktop-based default width");s.mouseUp({600,500});
             const auto initial=*s.text_.annotation().textBounds;const Point initialBorder{initial.left+30,initial.top};
             s.mouseDown(s.owner(),initialBorder);s.mouseUp({initialBorder.x+900,initialBorder.y-300});
@@ -120,7 +120,7 @@ struct CropTestAccess {
             s.mouseDown(s.owner(),{5750,200});require(s.text_.active() && s.text_.annotation().textBounds->width()==10,"Inside text default width stops at desktop edge");s.mouseUp({5750,200});s.commitText(true);
         });
         test("blank outside replacement commits composing text exactly once",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
             s.mouseDown(s.owner(),{600,500});s.mouseUp({600,500});s.text_.insert(L"composing text");s.text_.beginComposition();s.text_.insert(L" composition");
             s.mouseDown(s.owner(),{1200,200});require(!s.text_.active() && !s.textStore_ && s.dragging_ && s.selecting_ && !s.draft_ && !IsWindowVisible(s.toolbar_),"Blank outside replacement closes composing editor and hides toolbar");
             require(s.history_.visible().size()==1 && s.history_.visible()[0].text==L"composing text composition","Replacement commits composing text once");

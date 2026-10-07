@@ -8,9 +8,9 @@ namespace {
 constexpr UINT TrayMessage=WM_APP+2,CapturedMessage=WM_APP+3,ExportedMessage=WM_APP+4,FailureMessage=WM_APP+5,ActionMessage=WM_APP+6;
 constexpr UINT CheckUpdatesMessage=WM_APP+7,UpdateCheckedMessage=WM_APP+8,UpdateDownloadedMessage=WM_APP+9,PendingUpdateMessage=WM_APP+10;
 constexpr UINT CaptureId=100,FolderId=101,SettingsId=102,ExitId=103,CheckUpdatesId=104,InstallUpdateId=105,ReleasePageId=106;
-struct DownloadResult {std::optional<PreparedUpdate> update;std::wstring error;};
-struct CaptureResult {unsigned generation{};std::shared_ptr<const DesktopImage> desktop;std::wstring error;};
-struct ExportResult {unsigned generation{};SessionAction action{};EncodedImage image;std::vector<std::filesystem::path> paths;std::wstring error;};
+struct DownloadResult {std::optional<PreparedUpdate> update;std::optional<Message> error;};
+struct CaptureResult {unsigned generation{};std::shared_ptr<const DesktopImage> desktop;std::optional<Message> error;};
+struct ExportResult {unsigned generation{};SessionAction action{};EncodedImage image;std::vector<std::filesystem::path> paths;std::optional<Message> error;};
 HICON makeIcon() {
     // A small native vector-drawn tray glyph, no external assets or runtime files.
     HDC screen=GetDC(nullptr),dc=CreateCompatibleDC(screen);
@@ -27,7 +27,7 @@ HICON makeIcon() {
 }
 }
 App* App::active_{};
-App::App(HINSTANCE instance):instance_(instance),settings_(Settings::load()) {
+App::App(HINSTANCE instance,Settings settings):instance_(instance),settings_(std::move(settings)),language_(settings_.effectiveLanguage()) {
     active_=this;icon_=makeIcon();
     WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=instance_;wc.lpfnWndProc=windowProc;wc.lpszClassName=L"ScreenshotTool.Controller";wc.hIcon=icon_;
     wincheck(RegisterClassExW(&wc)!=0,"Register app window");
@@ -60,7 +60,7 @@ App::~App() {
         while(PeekMessageW(&message,window_,CapturedMessage,PendingUpdateMessage,PM_REMOVE)) {
             if(message.message==CapturedMessage)delete reinterpret_cast<CaptureResult*>(message.lParam);
             if(message.message==ExportedMessage)delete reinterpret_cast<ExportResult*>(message.lParam);
-            if(message.message==FailureMessage)delete reinterpret_cast<std::wstring*>(message.lParam);
+            if(message.message==FailureMessage)delete reinterpret_cast<Message*>(message.lParam);
             if(message.message==UpdateCheckedMessage)delete reinterpret_cast<UpdateCheckResult*>(message.lParam);
             if(message.message==UpdateDownloadedMessage)delete reinterpret_cast<DownloadResult*>(message.lParam);
         }
@@ -70,7 +70,7 @@ App::~App() {
 }
 int App::run(bool immediate) {
     if(immediate)PostMessageW(window_,CaptureMessage,0,0);
-    else notify(L"Ready. Press Print Screen to freeze your displays and select a region.");
+    else notify(format(language_,TextId::Ready));
     if(settings_.automaticUpdates)PostMessageW(window_,CheckUpdatesMessage,0,0);
     MSG msg{};int result;
     while((result=GetMessageW(&msg,nullptr,0,0))>0) {
@@ -82,7 +82,7 @@ int App::run(bool immediate) {
 LRESULT CALLBACK App::windowProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     auto app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
     if(message==WM_NCCREATE) {app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));app->window_=hwnd;}
-    if(app)try{return app->message(message,wp,lp);}catch(const std::exception& e){app->error(widen(e.what()));return 0;}
+    if(app)try{return app->message(message,wp,lp);}catch(const std::exception& e){app->error(errorMessage(e,TextId::OperationFailed));return 0;}
     return DefWindowProcW(hwnd,message,wp,lp);
 }
 LRESULT CALLBACK App::keyboardProc(int code,WPARAM wp,LPARAM lp) {
@@ -105,7 +105,7 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
     case CapturedMessage:captureFinished(lp);return 0;
     case ExportedMessage:exportFinished(lp);return 0;
     case FailureMessage: {
-        std::unique_ptr<std::wstring> detail(reinterpret_cast<std::wstring*>(lp));endSession();error(*detail);return 0;
+        std::unique_ptr<Message> detail(reinterpret_cast<Message*>(lp));endSession();error(*detail);return 0;
     }
     case ActionMessage:action(static_cast<SessionAction>(wp));return 0;
     case CheckUpdatesMessage:checkUpdates(false);return 0;
@@ -119,10 +119,11 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
     case WM_COMMAND:
         switch(LOWORD(wp)) {
         case CaptureId:capture();break;
-        case FolderId: {auto folder=picturesDirectory();std::filesystem::create_directories(folder);auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL));if(result<=32)throw std::runtime_error("Could not open the screenshots folder.");break;}
+        case FolderId: {auto folder=picturesDirectory();std::filesystem::create_directories(folder);auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr,L"open",folder.c_str(),nullptr,nullptr,SW_SHOWNORMAL));if(result<=32)throw AppError(TextId::OpenFolderFailed);break;}
         case SettingsId:if(state_.get()==State::Idle && !dialogOpen_ && !updateHandoff_) {
             dialogOpen_=true;
-            try{settings_.show(window_);}catch(...){dialogOpen_=false;throw;}
+            try{settings_.show(window_);language_=settings_.effectiveLanguage();refreshTrayLanguage();}
+            catch(const std::exception& e){dialogOpen_=false;error(errorMessage(e,TextId::SettingsFailed));PostMessageW(window_,PendingUpdateMessage,0,0);break;}
             dialogOpen_=false;PostMessageW(window_,PendingUpdateMessage,0,0);
         }break;
         case CheckUpdatesId:checkUpdates(true);break;
@@ -131,9 +132,9 @@ LRESULT App::message(UINT message,WPARAM wp,LPARAM lp) {
         case ExitId:exiting_=true;endSession();PostQuitMessage(0);break;
         }return 0;
     case WM_TIMER:
-        if(session_ && state_.get()==State::Editing)try{session_->validateDisplays();}catch(const std::exception& e){endSession();error(widen(e.what()));}return 0;
+        if(session_ && state_.get()==State::Editing)try{session_->validateDisplays();}catch(const std::exception& e){endSession();error(errorMessage(e,TextId::RenderFailed));}return 0;
     case WM_DISPLAYCHANGE:
-        if(state_.get()!=State::Idle){endSession();error(L"The display layout changed. Press Print Screen to capture the new layout.");}return 0;
+        if(state_.get()!=State::Idle){endSession();error({TextId::DisplayLayoutChanged});}return 0;
     case WM_QUERYENDSESSION:return TRUE;
     case WM_ENDSESSION:if(wp){exiting_=true;endSession();PostQuitMessage(0);}return 0;
     case WM_CLOSE:exiting_=true;endSession();PostQuitMessage(0);return 0;
@@ -146,18 +147,18 @@ void App::capture() {
     const unsigned generation=++generation_;const HWND target=window_;
     worker_=std::jthread([generation,target](std::stop_token stop) {
         auto result=std::make_unique<CaptureResult>();result->generation=generation;
-        try {ComApartment com(COINIT_MULTITHREADED);result->desktop=CaptureService{}.capture(stop);}catch(const std::exception& e){result->error=widen(e.what());}
+        try {ComApartment com(COINIT_MULTITHREADED);result->desktop=CaptureService{}.capture(stop);}catch(const std::exception& e){result->error=errorMessage(e,TextId::CaptureFailed);}
         if(PostMessageW(target,CapturedMessage,0,reinterpret_cast<LPARAM>(result.get())))result.release();
     });
 }
 void App::captureFinished(LPARAM raw) {
     std::unique_ptr<CaptureResult> result(reinterpret_cast<CaptureResult*>(raw));if(result->generation!=generation_)return;
-    if(!result->error.empty()){state_.reset();error(result->error);PostMessageW(window_,PendingUpdateMessage,0,0);return;}
+    if(result->error){state_.reset();error(*result->error);PostMessageW(window_,PendingUpdateMessage,0,0);return;}
     desktop_=std::move(result->desktop);
     try {
-        session_=std::make_unique<OverlaySession>(instance_,desktop_,settings_,[this](SessionAction a){PostMessageW(window_,ActionMessage,static_cast<WPARAM>(a),0);},[this](std::wstring text){auto value=std::make_unique<std::wstring>(std::move(text));if(PostMessageW(window_,FailureMessage,0,reinterpret_cast<LPARAM>(value.get())))value.release();});
+        session_=std::make_unique<OverlaySession>(instance_,desktop_,settings_,[this](SessionAction a){PostMessageW(window_,ActionMessage,static_cast<WPARAM>(a),0);},[this](Message message){auto value=std::make_unique<Message>(std::move(message));if(PostMessageW(window_,FailureMessage,0,reinterpret_cast<LPARAM>(value.get())))value.release();});
         state_.captured();session_->show();
-    } catch(...) {endSession();throw;}
+    } catch(const std::exception& e) {endSession();error(errorMessage(e,TextId::RenderFailed));}
 }
 void App::action(SessionAction action) {
     if(action==SessionAction::Cancel) {if(state_.get()!=State::Exporting)endSession();return;}
@@ -165,7 +166,7 @@ void App::action(SessionAction action) {
     try {
         session_->commitText();std::optional<std::filesystem::path> path;
         if(action==SessionAction::SaveAs) {
-            path=ExportService::chooseSavePath(session_->owner(),picturesDirectory());
+            path=ExportService::chooseSavePath(session_->owner(),picturesDirectory(),language_);
             if(!path){state_.exportFailed();return;}
         }
         session_->busy(true);
@@ -178,45 +179,50 @@ void App::action(SessionAction action) {
                 result->image=ExportService{}.prepare(*desktop,crop,annotations,action==SessionAction::QuickSave && desktop->intersectsHdr(crop));
                 if(action==SessionAction::QuickSave)result->paths=ExportService::quickSave(result->image,picturesDirectory());
                 else if(action==SessionAction::SaveAs) {ExportService::saveAs(result->image,*path);result->paths.push_back(*path);}
-            }catch(const std::exception& e){result->error=widen(e.what());}
+            }catch(const std::exception& e){result->error=errorMessage(e,TextId::ExportFailed);}
             if(PostMessageW(target,ExportedMessage,0,reinterpret_cast<LPARAM>(result.get())))result.release();
         });
-    }catch(...) {state_.exportFailed();if(session_)session_->busy(false);throw;}
+    }catch(const std::exception& e) {state_.exportFailed();if(session_)session_->busy(false);error(errorMessage(e,TextId::ExportFailed),TextId::ExportRetry);}
 }
 void App::exportFinished(LPARAM raw) {
     std::unique_ptr<ExportResult> result(reinterpret_cast<ExportResult*>(raw));if(result->generation!=generation_ || !session_)return;
-    if(result->error.empty() && result->action==SessionAction::Copy)try{ExportService::copy(window_,result->image);}catch(const std::exception& e){result->error=widen(e.what());}
-    if(!result->error.empty()) {state_.exportFailed();session_->busy(false);error(result->error+L"\n\nYour selection is still available. Retry the export.");return;}
+    if(!result->error && result->action==SessionAction::Copy)try{ExportService::copy(window_,result->image);}catch(const std::exception& e){result->error=errorMessage(e,TextId::ExportFailed);}
+    if(result->error) {state_.exportFailed();session_->busy(false);error(*result->error,TextId::ExportRetry);return;}
     const auto action=result->action;const auto paths=result->paths;endSession();
-    if(action==SessionAction::Copy)notify(L"Screenshot copied.");
-    else if(!paths.empty())notify(L"Saved "+std::to_wstring(paths.size())+L" image"+(paths.size()>1?L"s":L"")+L" to "+paths.front().parent_path().wstring());
+    if(action==SessionAction::Copy)notify(format(language_,TextId::Copied));
+    else if(!paths.empty())notify(format(language_,TextId::Saved,{std::to_wstring(paths.size()),paths.front().parent_path().wstring()}));
 }
 void App::endSession() {
     ++generation_;worker_.request_stop();session_.reset();desktop_.reset();state_.reset();
-    if(!exiting_)try{settings_.save();}catch(const std::exception& e){notify(widen(e.what()),true);}
+    if(!exiting_)try{settings_.save();}catch(const std::exception& e){notify(errorMessage(e,TextId::SaveSettingsFailed).render(language_),true);}
     if(!exiting_)PostMessageW(window_,PendingUpdateMessage,0,0);
 }
 void App::addTray() {
     NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;data.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;data.uCallbackMessage=TrayMessage;
-    data.hIcon=icon_?icon_:LoadIconW(nullptr,IDI_APPLICATION);wcscpy_s(data.szTip,L"ScreenshotTool — Print Screen to capture");
+    data.hIcon=icon_?icon_:LoadIconW(nullptr,IDI_APPLICATION);wcscpy_s(data.szTip,abbreviate(text(language_,TextId::TrayTip),std::size(data.szTip)-1).c_str());
     wincheck(Shell_NotifyIconW(NIM_ADD,&data),"Add system tray icon");trayAdded_=true;data.uVersion=NOTIFYICON_VERSION_4;Shell_NotifyIconW(NIM_SETVERSION,&data);
 }
+void App::refreshTrayLanguage() {
+    NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;data.uFlags=NIF_TIP;
+    wcscpy_s(data.szTip,abbreviate(text(language_,TextId::TrayTip),std::size(data.szTip)-1).c_str());
+    Shell_NotifyIconW(NIM_MODIFY,&data);
+}
 void App::trayMenu() {
-    HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,CaptureId,L"Capture\tPrint Screen");AppendMenuW(menu,MF_STRING,FolderId,L"Open screenshots folder");AppendMenuW(menu,MF_STRING|(state_.get()!=State::Idle?MF_GRAYED:0),SettingsId,L"Settings");AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,ExitId,L"Exit");
-    InsertMenuW(menu,3,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),CheckUpdatesId,updateBusy_?L"Checking / downloading update…":L"Check for updates");
+    HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,CaptureId,text(language_,TextId::CaptureMenu).data());AppendMenuW(menu,MF_STRING,FolderId,text(language_,TextId::OpenFolder).data());AppendMenuW(menu,MF_STRING|(state_.get()!=State::Idle?MF_GRAYED:0),SettingsId,text(language_,TextId::Settings).data());AppendMenuW(menu,MF_SEPARATOR,0,nullptr);AppendMenuW(menu,MF_STRING,ExitId,text(language_,TextId::Exit).data());
+    InsertMenuW(menu,3,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),CheckUpdatesId,text(language_,updateBusy_?TextId::UpdateBusy:TextId::CheckUpdates).data());
     const bool installAvailable=updateRelease_ && updateCompatible_;
-    if(installAvailable)InsertMenuW(menu,4,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),InstallUpdateId,L"Install update…");
-    InsertMenuW(menu,installAvailable?5:4,MF_BYPOSITION|MF_STRING,ReleasePageId,L"View GitHub releases");
+    if(installAvailable)InsertMenuW(menu,4,MF_BYPOSITION|MF_STRING|(updateBusy_?MF_GRAYED:0),InstallUpdateId,text(language_,TextId::InstallUpdate).data());
+    InsertMenuW(menu,installAvailable?5:4,MF_BYPOSITION|MF_STRING,ReleasePageId,text(language_,TextId::ViewReleases).data());
     POINT point{};GetCursorPos(&point);SetForegroundWindow(window_);TrackPopupMenu(menu,TPM_RIGHTBUTTON,point.x,point.y,0,window_,nullptr);DestroyMenu(menu);PostMessageW(window_,WM_NULL,0,0);
 }
 void App::notify(const std::wstring& text,bool error) {
     updateBalloon_=false;
     NOTIFYICONDATAW data{sizeof(data)};data.hWnd=window_;data.uID=1;data.uFlags=NIF_INFO;data.dwInfoFlags=error?NIIF_ERROR:NIIF_INFO;
-    wcscpy_s(data.szInfoTitle,L"ScreenshotTool");wcsncpy_s(data.szInfo,text.c_str(),_TRUNCATE);Shell_NotifyIconW(NIM_MODIFY,&data);
+    wcscpy_s(data.szInfoTitle,L"ScreenshotTool");wcscpy_s(data.szInfo,abbreviate(text,std::size(data.szInfo)-1).c_str());Shell_NotifyIconW(NIM_MODIFY,&data);
 }
 void App::checkUpdates(bool manual) {
     if(exiting_ || updateBusy_)return;
-    if(std::chrono::steady_clock::now()<updateRetryAfter_){if(manual)notify(L"GitHub has limited update requests. Try again later.",true);return;}
+    if(std::chrono::steady_clock::now()<updateRetryAfter_){if(manual)notify(format(language_,TextId::RateLimited),true);return;}
     updateBusy_=true;manualUpdateCheck_=manual;const auto target=window_;
     updateWorker_=std::jthread([target](std::stop_token stop) {
         auto result=std::make_unique<UpdateCheckResult>(UpdateService::check(stop));
@@ -232,7 +238,7 @@ void App::updateChecked(LPARAM raw) {
         updateCompatible_=false;updateRelease_=std::move(result->release);pendingUpdateNotification_=true;processPendingUpdate();
     }else {
         if(result->status==UpdateStatus::Current || result->status==UpdateStatus::NoRelease){updateRelease_.reset();pendingUpdateNotification_=pendingUpdatePrompt_=false;}
-        if(manualUpdateCheck_ && result->status!=UpdateStatus::Canceled)notify(result->message,result->status==UpdateStatus::Failed || result->status==UpdateStatus::RateLimited);
+        if(manualUpdateCheck_ && result->status!=UpdateStatus::Canceled)notify(result->message.render(language_),result->status==UpdateStatus::Failed || result->status==UpdateStatus::RateLimited);
     }
 }
 void App::processPendingUpdate() {
@@ -241,24 +247,24 @@ void App::processPendingUpdate() {
     if(pendingUpdatePrompt_ && updateRelease_ && !updateBusy_){pendingUpdatePrompt_=false;promptUpdate();return;}
     if(pendingUpdateNotification_ && updateRelease_) {
         pendingUpdateNotification_=false;
-        notify(L"ScreenshotTool "+updateRelease_->version.text()+(updateCompatible_?L" is available. Click to install and restart.":L" is available for manual installation. Click to open its GitHub release."));updateBalloon_=true;
+        notify(format(language_,updateCompatible_?TextId::UpdateAvailable:TextId::UpdateManualAvailable,{updateRelease_->version.text()}));updateBalloon_=true;
     }
 }
 void App::openReleasePage() {
     const auto url=updateRelease_?updateRelease_->releaseUrl:L"https://github.com/bustedbunny/ScreenshotTool/releases/latest";
     const auto result=reinterpret_cast<INT_PTR>(ShellExecuteW(window_,L"open",url.c_str(),nullptr,nullptr,SW_SHOWNORMAL));
-    if(result<=32)throw std::runtime_error("Could not open the GitHub release page.");
+    if(result<=32)throw AppError(TextId::OpenReleaseFailed);
 }
 void App::promptUpdate() {
     if(!updateRelease_)return;
     if(!updateCompatible_){openReleasePage();return;}
     dialogOpen_=true;
     struct Reset {bool& flag;~Reset(){flag=false;}}reset{dialogOpen_};
-    const auto instruction=L"Install ScreenshotTool "+updateRelease_->version.text()+L"?";
-    TASKDIALOG_BUTTON buttons[]{{IDOK,L"Download and restart"},{ReleasePageId,L"View release notes"}};
-    TASKDIALOGCONFIG config{sizeof(config)};config.hwndParent=window_;config.pszWindowTitle=L"ScreenshotTool update";
-    config.pszMainInstruction=instruction.c_str();config.pszContent=L"The verified update will replace this executable and restart ScreenshotTool. Your settings will be preserved.\n\nIf you start a screenshot while downloading, installation waits until you finish.";
-    config.dwCommonButtons=TDCBF_CANCEL_BUTTON;config.cButtons=2;config.pButtons=buttons;config.nDefaultButton=IDOK;
+    const auto instruction=format(language_,TextId::InstallQuestion,{updateRelease_->version.text()});
+    TASKDIALOG_BUTTON buttons[]{{IDOK,text(language_,TextId::DownloadRestart).data()},{ReleasePageId,text(language_,TextId::ViewNotes).data()},{IDCANCEL,text(language_,TextId::Cancel).data()}};
+    TASKDIALOGCONFIG config{sizeof(config)};config.hwndParent=window_;config.pszWindowTitle=text(language_,TextId::UpdateTitle).data();
+    config.pszMainInstruction=instruction.c_str();config.pszContent=text(language_,TextId::UpdateExplanation).data();
+    config.cButtons=3;config.pButtons=buttons;config.nDefaultButton=IDOK;
     config.dwFlags=TDF_SIZE_TO_CONTENT|TDF_ALLOW_DIALOG_CANCELLATION;int selected{};
     check(TaskDialogIndirect(&config,&selected,nullptr,nullptr),"Confirm update");
     if(selected==ReleasePageId){openReleasePage();return;}
@@ -266,14 +272,14 @@ void App::promptUpdate() {
     settings_.save();const auto release=*updateRelease_;const auto path=UpdateService::executablePath();const auto target=window_;updateBusy_=true;
     updateWorker_=std::jthread([release,path,target](std::stop_token stop) {
         auto result=std::make_unique<DownloadResult>();
-        try{result->update=UpdateService::download(release,path,stop);}catch(const std::exception& error){result->error=widen(error.what());}
+        try{result->update=UpdateService::download(release,path,stop);}catch(const std::exception& error){result->error=errorMessage(error,TextId::UpdateFailed);}
         if(PostMessageW(target,UpdateDownloadedMessage,0,reinterpret_cast<LPARAM>(result.get())))result.release();
     });
-    notify(L"Downloading and verifying the update. Screenshot capture remains available.");
+    notify(format(language_,TextId::Downloading));
 }
 void App::updateDownloaded(LPARAM raw) {
     std::unique_ptr<DownloadResult> result(reinterpret_cast<DownloadResult*>(raw));updateBusy_=false;if(exiting_)return;
-    if(!result->error.empty()){notify(result->error+L" Open the GitHub release page from the tray to install manually.",true);return;}
+    if(result->error){notify(result->error->render(language_,TextId::ManualInstallHelp),true);return;}
     preparedUpdate_=std::move(result->update);processPendingUpdate();
 }
 void App::installPreparedUpdate() {
@@ -282,8 +288,11 @@ void App::installPreparedUpdate() {
         settings_.save();UpdateService::launchHelper(*preparedUpdate_);preparedUpdate_.reset();
         exiting_=true;endSession();PostQuitMessage(0);
     }catch(const std::exception& error) {
-        updateHandoff_=false;preparedUpdate_.reset();notify(widen(error.what())+L" Open the GitHub release page to install manually.",true);
+        updateHandoff_=false;preparedUpdate_.reset();notify(errorMessage(error,TextId::UpdateFailed).render(language_,TextId::ManualInstallHelp),true);
     }
 }
-void App::error(const std::wstring& text) {MessageBoxW(session_?session_->owner():window_,text.c_str(),L"ScreenshotTool",MB_OK|MB_ICONERROR|MB_TOPMOST);}
+void App::error(const Message& message,TextId guidance) {
+    const auto content=message.render(language_,guidance);
+    MessageBoxW(session_?session_->owner():window_,content.c_str(),L"ScreenshotTool",MB_OK|MB_ICONERROR|MB_TOPMOST);
+}
 }

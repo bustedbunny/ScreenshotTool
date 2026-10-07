@@ -1,5 +1,6 @@
 #pragma once
 #include "graphics.hpp"
+#include "localization.hpp"
 #include "settings.hpp"
 #include "text_store.hpp"
 
@@ -7,7 +8,7 @@ namespace shot {
 enum class SessionAction { Copy,QuickSave,SaveAs,Cancel };
 class OverlaySession {
 public:
-    OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(std::wstring)> failure);
+    OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(Message)> failure);
     ~OverlaySession();
     void show();
     bool translate(MSG& message);
@@ -41,7 +42,7 @@ private:
     void repaintText(Rect previous,Rect current);
     void placeToolbar();
     void createToolbar();
-    void layoutToolbar(unsigned dpi);
+    void layoutToolbar(unsigned dpi,int availableWidth);
     void command(int id);
     void refreshButtons();
     void refreshStatus();
@@ -56,15 +57,16 @@ private:
     HINSTANCE instance_{};
     std::shared_ptr<const DesktopImage> desktop_;
     Settings& settings_;
+    Language language_{};
     std::function<void(SessionAction)> action_;
-    std::function<void(std::wstring)> failure_;
+    std::function<void(Message)> failure_;
     std::vector<std::unique_ptr<MonitorWindow>> windows_;
     HWND toolbar_{},tooltip_{},textWindow_{};
     HFONT toolbarFont_{};
     HBRUSH darkBrush_{};
     std::vector<ToolbarButton> buttons_;
     std::wstring toolbarStatus_;
-    unsigned toolbarDpi_{96};int toolbarWidth_{},toolbarHeight_{};
+    unsigned toolbarDpi_{96};int toolbarWidth_{},toolbarHeight_{},toolbarWidthLimit_{},toolbarStatusTop_{};
     bool busy_{},dragging_{},selecting_{},closing_{},errorReported_{},pixelated_{};
     bool firstRegionCompleted_{};
     Point dragStart_{};Rect selection_{},original_{};Handle handle_{Handle::None};

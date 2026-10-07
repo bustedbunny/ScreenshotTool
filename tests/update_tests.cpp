@@ -9,6 +9,7 @@
 #include <sstream>
 #include <thread>
 #include <winrt/base.h>
+#include "../resources/resource.h"
 
 using namespace shot;
 namespace {
@@ -152,6 +153,7 @@ void transactionTests() {
     });
 }
 }
+#include "localization_tests.hpp"
 int wmain(int argc,wchar_t** argv) {
     try {
         if(auto result=UpdateService::runHelper(argc,argv))return *result;
@@ -160,11 +162,11 @@ int wmain(int argc,wchar_t** argv) {
             auto marker=UpdateService::executablePath();marker+=L".started";write(marker,"ready");UpdateService::finishStartup(argc,argv);return 0;
         }
         if(argc>1 && std::wstring_view(argv[1])==L"--github-probe") {
-            const auto result=UpdateService::check({});std::wcout<<result.message<<L'\n';
+            const auto result=UpdateService::check({});std::wcout<<result.message.render(Language::English)<<L'\n';
             return result.status==UpdateStatus::Failed || result.status==UpdateStatus::RateLimited?1:0;
         }
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
-        versionTests();verificationTests();transactionTests();winrt::uninit_apartment();
+        localizationTests();versionTests();verificationTests();transactionTests();winrt::uninit_apartment();
         std::cout<<passed<<" passed, "<<failed<<" failed\n";return failed?1:0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include "win.hpp"
+#include "localization.hpp"
 #include <iosfwd>
 namespace shot {
 struct Settings {
@@ -7,6 +8,8 @@ struct Settings {
     float strokeWidth{3};
     float textSize{24};
     bool automaticUpdates{true};
+    Language language{Language::Automatic};
+    Language effectiveLanguage() const { return resolveLanguage(language,GetUserDefaultUILanguage()); }
     static Settings load();
     static Settings read(std::istream& stream);
     void write(std::ostream& stream) const;
@@ -14,5 +17,10 @@ struct Settings {
     static bool launchAtSignIn();
     static void setLaunchAtSignIn(bool enabled);
     void show(HWND owner);
+};
+// Creates the same native dialog without saving settings or changing sign-in.
+// The caller owns the window and must release it with DestroyWindow.
+struct SettingsDialogTestAccess {
+    static HWND create(const Settings& settings,bool signIn=false,unsigned dpi=0,Settings* accepted=nullptr);
 };
 }

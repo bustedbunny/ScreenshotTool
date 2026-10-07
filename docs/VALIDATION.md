@@ -1,5 +1,13 @@
 # Validation record
 
+## Language selection and automatic detection - 2026-10-07
+
+Release build succeeded with MSVC x64 in `build/localization-validation`. The fresh CTest run passed **75 checks, 0 failed**: 51 in `ScreenshotToolTests` and 24 in `ScreenshotToolUpdateTests`, in 6.84 seconds. `git diff --check` passed. The rebuilt executable is `build/localization-validation/Release/ScreenshotTool.exe`.
+
+New checks cover supported and unsupported Windows UI language IDs, regional variants, fixed overrides, old/malformed settings and every language round trip, catalog completeness and placeholders, owned background messages, preserved diagnostic codes, notification shortening, and native-script font glyphs. Real native settings controls are measured at 96/144/192 DPI, including OK/Cancel behavior without disk or registry changes. Toolbar controls, full captions, status text and registered tooltips are checked in all six languages at 96/144/192/288 DPI and narrow/wide widths; unchanged refreshes retain the existing no-mutation behavior. The toolbar tests now embed the app's common-controls manifest.
+
+These checks use native offscreen dialogs/windows and injected language IDs. Live tray interaction, an actual Windows display-language change, and screenshot-session visual inspection were not performed in this run. Release builds and file/updater tests ran outside the restricted sandbox because its account stalled MSBuild and denied existing native file operations.
+
 ## Outside drag selection replacement - 2026-10-07
 
 Release build completed successfully with MSVC x64 using `cmake --build --preset release --parallel`. The fresh `ctest --preset release --verbose` run passed **65 checks, 0 failed** across `ScreenshotToolTests` (49) and `ScreenshotToolUpdateTests` (16), in 15.75 seconds. The rebuilt executable is `build/Release/ScreenshotTool.exe`. `git diff --check` passed.

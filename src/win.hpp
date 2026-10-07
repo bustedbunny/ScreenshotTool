@@ -1,6 +1,7 @@
 #pragma once
 #include "core.hpp"
 #include <windows.h>
+#include "localization.hpp"
 #include <wrl/client.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>

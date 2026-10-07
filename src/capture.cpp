@@ -29,7 +29,7 @@ float querySdrWhite(const std::wstring& name,bool required) {
         if(DisplayConfigGetDeviceInfo(&white.header)==ERROR_SUCCESS && white.SDRWhiteLevel>0)
             return 80.f*white.SDRWhiteLevel/1000.f;
     }
-    if(required)throw std::runtime_error("Cannot read the HDR monitor's SDR brightness. Reconnect the display or update its graphics driver, then capture again.");
+    if(required)throw AppError(TextId::HdrBrightness);
     return 80.f;
 }
 namespace {
@@ -51,13 +51,13 @@ void readTexture(OutputCapture& output,IDXGIResource* resource) {
     ComPtr<ID3D11Texture2D> texture;check(resource->QueryInterface(IID_PPV_ARGS(&texture)),"Get capture texture");
     D3D11_TEXTURE2D_DESC desc{};texture->GetDesc(&desc);
     if(output.monitor.hdr && desc.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT)
-        throw std::runtime_error("The graphics driver returned an SDR surface for an HDR display. Update the driver or disable HDR explicitly before retrying; this capture cannot preserve HDR.");
+        throw AppError(TextId::HdrSurface);
     if(desc.Format!=DXGI_FORMAT_R16G16B16A16_FLOAT && desc.Format!=DXGI_FORMAT_B8G8R8A8_UNORM)
-        throw std::runtime_error("The graphics driver returned an unsupported desktop format. Update the driver and retry.");
+        throw AppError(TextId::DesktopFormat);
     const int w=static_cast<int>(desc.Width),h=static_cast<int>(desc.Height);
     const bool swapped=output.monitor.rotation==Rotation::Clockwise90 || output.monitor.rotation==Rotation::Clockwise270;
     if(output.monitor.bounds.width()!=(swapped?h:w) || output.monitor.bounds.height()!=(swapped?w:h))
-        throw std::runtime_error("The display layout changed during capture. Capture again.");
+        throw AppError(TextId::CaptureLayoutChanged);
     desc.Usage=D3D11_USAGE_STAGING;desc.BindFlags=0;desc.CPUAccessFlags=D3D11_CPU_ACCESS_READ;desc.MiscFlags=0;
     ComPtr<ID3D11Texture2D> staging;check(output.device->CreateTexture2D(&desc,nullptr,&staging),"Allocate desktop staging image");
     output.context->CopyResource(staging.Get(),texture.Get());
@@ -118,11 +118,11 @@ std::shared_ptr<const DesktopImage> CaptureService::capture(std::stop_token stop
             outputs.push_back(std::move(capture));
         }
     }
-    if(outputs.empty())throw std::runtime_error("No active displays are available for capture.");
+    if(outputs.empty())throw AppError(TextId::NoDisplays);
     auto desktop=std::make_shared<DesktopImage>();
     // Each adapter owns its device. CPU staging bridges adapters without shared-resource assumptions.
     for(auto& output:outputs) {readFrame(output,stop);desktop->monitors.push_back(std::move(output.monitor));}
-    if(!factory->IsCurrent())throw std::runtime_error("Display settings changed during capture. Capture again.");
+    if(!factory->IsCurrent())throw AppError(TextId::CaptureSettingsChanged);
     return desktop;
 }
 }

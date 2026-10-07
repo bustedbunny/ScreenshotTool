@@ -1,5 +1,6 @@
 #pragma once
 #include "win.hpp"
+#include "localization.hpp"
 #include <array>
 #include <chrono>
 #include <compare>
@@ -21,7 +22,7 @@ enum class UpdateStatus { Current, Available, NoRelease, Incompatible, Failed, R
 struct UpdateCheckResult {
     UpdateStatus status{UpdateStatus::Failed};
     std::optional<ReleaseInfo> release;
-    std::wstring message;
+    Message message{TextId::UpdateFailed};
     unsigned retryAfterSeconds{};
 };
 // Owns only the uniquely named files created for this update. Move-only so a
@@ -51,7 +52,7 @@ public:
     // Returns only after the helper has validated its inputs and opened its
     // parent handle; caller must then exit, without deleting PreparedUpdate.
     static void launchHelper(PreparedUpdate&, HANDLE parent = GetCurrentProcess());
-    static std::optional<int> runHelper(int argc, wchar_t** argv);
+    static std::optional<int> runHelper(int argc, wchar_t** argv, Language language = Language::English);
     static void finishStartup(int argc, wchar_t** argv);
     static std::filesystem::path executablePath();
     static void replaceAndRestart(const PreparedUpdate&, const std::function<void()>& restart);

@@ -1,10 +1,11 @@
 // Native offscreen-window integration tests. No desktop capture or synthetic user input.
 namespace shot {
 struct OverlayTestAccess {
-    struct Counts {int labels{},enabled{};};
+    struct Counts {int labels{},enabled{},positions{},fonts{};};
     static LRESULT CALLBACK countButton(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp,UINT_PTR,DWORD_PTR data) {
         auto& counts=*reinterpret_cast<Counts*>(data);
         if(msg==WM_SETTEXT)++counts.labels;if(msg==WM_ENABLE)++counts.enabled;
+        if(msg==WM_WINDOWPOSCHANGED)++counts.positions;if(msg==WM_SETFONT)++counts.fonts;
         return DefSubclassProc(hwnd,msg,wp,lp);
     }
     static std::shared_ptr<DesktopImage> desktop() {
@@ -35,8 +36,70 @@ struct OverlayTestAccess {
         s.textStart_={0,0};s.textOriginal_=*s.text_.annotation().textBounds;s.text_.beginGesture();
     }
     static void tests() {
+        test("localized toolbar fits all languages DPI scales and narrow work areas",[]{
+            for(Language language:Languages) {
+                Settings settings;settings.language=language;
+                OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected localized toolbar error");});setup(s);
+                require(s.language_==language && s.buttons_.front().label==text(language,TextId::Select),"Toolbar uses selected language");
+                require(IsWindow(s.tooltip_) && SendMessageW(s.tooltip_,TTM_GETTOOLCOUNT,0,0)==static_cast<LRESULT>(s.buttons_.size()),"Every toolbar control has a registered native tooltip");
+                std::vector<std::wstring> originalTips;std::vector<const wchar_t*> originalTipBuffers;
+                for(const auto& button:s.buttons_){originalTips.push_back(button.tip);originalTipBuffers.push_back(button.tip.data());}
+                for(unsigned dpi:{96u,144u,192u,288u})for(int availableWidth:{540,1200}) {
+                    s.layoutToolbar(dpi,availableWidth);
+                    require(s.toolbarDpi_==dpi && s.toolbarWidth_<=availableWidth,"Toolbar wraps without reducing actual monitor DPI");
+                    require(reinterpret_cast<HFONT>(SendMessageW(s.tooltip_,WM_GETFONT,0,0))==s.toolbarFont_,"Tooltips use the locale toolbar font");
+                    require(SendMessageW(s.tooltip_,TTM_GETMAXTIPWIDTH,0,0)<=MulDiv(420,dpi,96),"Long translated tips wrap within a DPI-scaled width");
+                    settings.strokeWidth=24;settings.textSize=144;s.refreshButtons();
+                    for(bool pixelated:{false,true}) {
+                        s.pixelated_=pixelated;s.refreshButtons();
+                        RECT client{};GetClientRect(s.toolbar_,&client);HDC dc=GetDC(s.toolbar_);auto old=SelectObject(dc,s.toolbarFont_);
+                        std::vector<RECT> rectangles;
+                        for(size_t index=0;index<s.buttons_.size();++index) {
+                            const auto& button=s.buttons_[index];
+                            RECT bounds{};GetWindowRect(button.hwnd,&bounds);MapWindowPoints(nullptr,s.toolbar_,reinterpret_cast<POINT*>(&bounds),2);
+                            require(bounds.left>=0 && bounds.right<=client.right && bounds.top>=0 && bounds.bottom<=s.toolbarStatusTop_,"Every control remains inside toolbar and above status");
+                            for(const auto& previous:rectangles){RECT overlap{};require(!IntersectRect(&overlap,&bounds,&previous),"Wrapped controls do not overlap");}rectangles.push_back(bounds);
+                            const int padding=MulDiv(button.id==1100?40:20,dpi,96);
+                            RECT caption{0,0,bounds.right-bounds.left-padding,0};const LONG width=caption.right;
+                            DrawTextW(dc,button.label.c_str(),-1,&caption,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX|DT_CALCRECT);
+                            require(caption.right<=width && caption.bottom<=bounds.bottom-bounds.top-MulDiv(8,dpi,96),"Complete translated caption fits its control");
+                            require(button.tip==originalTips[index] && button.tip.data()==originalTipBuffers[index],"Owned tooltip text stays stable after layout and value changes");
+                            // Common controls may copy the supplied text. Query the registered
+                            // contents into a caller-owned buffer rather than comparing pointers.
+                            std::vector<wchar_t> tip(originalTips[index].size()+2);
+                            TOOLINFOW info{sizeof(info)};info.uFlags=TTF_IDISHWND|TTF_SUBCLASS;info.hwnd=s.toolbar_;info.uId=reinterpret_cast<UINT_PTR>(button.hwnd);info.lpszText=tip.data();
+                            SendMessageW(s.tooltip_,TTM_GETTEXTW,tip.size(),reinterpret_cast<LPARAM>(&info));
+                            const std::wstring_view actualTip(tip.data());
+                            if(actualTip!=originalTips[index]) {
+                                const int bytes=WideCharToMultiByte(CP_UTF8,0,actualTip.data(),static_cast<int>(actualTip.size()),nullptr,0,nullptr,nullptr);
+                                std::string nativeTip(bytes,'\0');if(bytes)WideCharToMultiByte(CP_UTF8,0,actualTip.data(),static_cast<int>(actualTip.size()),nativeTip.data(),bytes,nullptr,nullptr);
+                                throw std::runtime_error("Registered translated tooltip survives layout and value changes: language="+std::string(languageTag(language))+" id="+std::to_string(button.id)+" tool_count="+std::to_string(SendMessageW(s.tooltip_,TTM_GETTOOLCOUNT,0,0))+" expected_chars="+std::to_string(originalTips[index].size())+" actual_chars="+std::to_string(actualTip.size())+" text="+nativeTip);
+                            }
+                        }
+                        RECT status=s.statusRect();const LONG statusWidth=status.right-status.left;status.right=statusWidth;status.left=status.top=0;status.bottom=0;
+                        s.refreshStatus();DrawTextW(dc,s.toolbarStatus_.c_str(),-1,&status,DT_WORDBREAK|DT_NOPREFIX|DT_CALCRECT);
+                        require(status.right<=statusWidth && status.bottom<=client.bottom-s.toolbarStatusTop_,"Translated status fits below all toolbar rows");
+                        SelectObject(dc,old);ReleaseDC(s.toolbar_,dc);
+                    }
+                    clear(s);Counts counts;for(const auto& b:s.buttons_)SetWindowSubclass(b.hwnd,countButton,1,reinterpret_cast<DWORD_PTR>(&counts));
+                    for(int i=0;i<10;++i){s.layoutToolbar(dpi,availableWidth);s.refreshButtons();s.refreshStatus();}
+                    require(!counts.labels && !counts.enabled && !counts.positions && !counts.fonts,"Identical refresh does not relayout or mutate toolbar controls");
+                    for(const auto& b:s.buttons_)RemoveWindowSubclass(b.hwnd,countButton,1);
+                }
+            }
+        });
+        test("overlay keeps its language snapshot and reports owned contextual messages",[]{
+            Settings settings;settings.language=Language::Japanese;std::vector<Message> failures;
+            OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[&](Message message){failures.push_back(std::move(message));});settings.language=Language::German;setup(s);
+            require(s.language_==Language::Japanese && s.buttons_.front().label==text(Language::Japanese,TextId::Select),"Active session keeps initial effective language");
+            s.monitorMessage(*s.windows_.front(),WM_DPICHANGED,0,0);
+            require(failures.size()==1 && failures.front().id==TextId::DisplayScalingChanged,"DPI failure carries translatable message ID");
+            s.report(std::runtime_error("Direct2D operation failed: 0x887A0005"));s.report(std::runtime_error("second failure"));
+            require(failures.size()==2 && failures.back().id==TextId::RenderFailed && failures.back().diagnostic.find(L"0x887A0005")!=std::wstring::npos,"Contextual render error owns API diagnostics and only reports once");
+            require(failures.back().render(Language::German).find(text(Language::German,TextId::RenderFailed))!=std::wstring::npos,"Failure can render in current application language");
+        });
         test("toolbar mutations only follow changed labels enabled tools and swatches",[]{
-            Settings settings;Counts counts;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected overlay error");});setup(s);
+            Settings settings;Counts counts;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected overlay error");});setup(s);
             for(const auto& b:s.buttons_)require(SetWindowSubclass(b.hwnd,countButton,1,reinterpret_cast<DWORD_PTR>(&counts))!=FALSE,"Observe button messages");
             for(int i=0;i<100;++i){s.refreshButtons();s.refreshStatus();s.repaint();}
             require(!counts.labels && !counts.enabled && !dirtyButtons(s) && !GetUpdateRect(s.toolbar_,nullptr,FALSE),"Canvas repaint never mutates toolbar");clear(s);
@@ -52,7 +115,7 @@ struct OverlayTestAccess {
             s.refreshButtons();s.refreshStatus();require(counts.enabled==9 && !dirtyButtons(s) && !GetUpdateRect(s.toolbar_,nullptr,FALSE),"Repeated busy state is a no-op");
         });
         test("toolbar parent clips children and paints only its invalid area",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](std::wstring){});setup(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){});setup(s);
             require((GetWindowLongPtrW(s.toolbar_,GWL_STYLE)&WS_CLIPCHILDREN)!=0,"Parent excludes child buttons from its paint DC");
             HDC dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=600;info.bmiHeader.biHeight=-160;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;void* bits{};
             HBITMAP bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0);require(bitmap!=nullptr,"Create offscreen toolbar paint target");auto old=SelectObject(dc,bitmap);
@@ -65,7 +128,7 @@ struct OverlayTestAccess {
             SelectClipRgn(dc,nullptr);require(GetPixel(dc,child.left+3,child.top+3)==sentinel,"Child label area remains untouched");
         });
         test("text drag updates only old and new monitors and ignores repeated pointers",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](std::wstring){});setup(s);s.text_.insert(L"drag text");clear(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){});setup(s);s.text_.insert(L"drag text");clear(s);
             ComPtr<IDWriteTextLayout> layout=s.text_.layout();const auto* buffer=s.text_.annotation().text.data();int updates=0;auto callback=s.text_.changed;
             s.text_.changed=[&](const TextUpdate& update){++updates;require(update.flags==TextChange::Geometry && update.previousText.empty(),"Drag reports geometry without copying content");callback(update);};
             s.caretVisible_=false;settings.color={0,1,0,1};settings.textSize=72;drag(s);SetTimer(s.owner(),42,USER_TIMER_MINIMUM,nullptr);s.mouseMove({3900,20});
@@ -90,7 +153,7 @@ struct OverlayTestAccess {
     }
     static void benchmark() {
         for(const auto& value:std::vector<std::wstring>{L"",L"first line\nsecond line with a few wrapped words\nthird line",std::wstring(InlineText::limit,L'x')}) {
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](std::wstring){});setup(s);s.text_.insert(value);clear(s);
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){});setup(s);s.text_.insert(value);clear(s);
             ComPtr<TextSink> sink;sink.Attach(new TextSink);sink->grant=[](DWORD){};
             s.textStore_.Attach(new TextStore(s.text_,s.owner(),s.selection_));check(s.textStore_->AdviseSink(__uuidof(ITextStoreACPSink),sink.Get(),TS_AS_TEXT_CHANGE|TS_AS_SEL_CHANGE|TS_AS_LAYOUT_CHANGE),"Benchmark sink");
             Counts counts;for(const auto& b:s.buttons_)SetWindowSubclass(b.hwnd,countButton,1,reinterpret_cast<DWORD_PTR>(&counts));

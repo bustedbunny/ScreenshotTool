@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include "localization.hpp"
 #include <iomanip>
 #include <sstream>
 
@@ -45,7 +46,7 @@ Point sourcePixel(Point p, int w, int h, Rotation rotation) {
 }
 Image::Image(int w, int h):width(w),height(h) {
     if (w<=0 || h<=0 || w>32768 || h>32768 || static_cast<uint64_t>(w)*h>268435456)
-        throw std::runtime_error("The selected image is too large. Select a smaller region.");
+        throw AppError(TextId::SelectedImageTooLarge);
     pixels.resize(static_cast<size_t>(w)*h);
 }
 float srgbToLinear(float v) { return v<=0.04045f ? v/12.92f : std::pow((v+0.055f)/1.055f,2.4f); }
@@ -106,7 +107,7 @@ std::wstring availableStem(const std::wstring& stem,const std::function<bool(con
         auto candidate=stem+(i ? L"_"+std::to_wstring(i) : L"");
         if(!exists(candidate+L"_SDR.png") && !exists(candidate+L"_HDR.jxr") && !exists(candidate+L".lock"))return candidate;
     }
-    throw std::runtime_error("Too many screenshots with this name.");
+    throw AppError(TextId::TooManyScreenshots);
 }
 void publishFiles(std::span<const StagedFile> files,const FileOperations& ops) {
     size_t committed=0;

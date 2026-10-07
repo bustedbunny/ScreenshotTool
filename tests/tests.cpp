@@ -292,6 +292,7 @@ void colorTests() {
 int main(int argc,char** argv) {
     try {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);ComApartment com;
+        INITCOMMONCONTROLSEX controls{sizeof(controls),ICC_STANDARD_CLASSES|ICC_WIN95_CLASSES};wincheck(InitCommonControlsEx(&controls),"Initialize test controls");
         if(argc>1 && std::string_view(argv[1])=="--capture-probe") {
             auto desktop=CaptureService{}.capture();std::cout<<"Captured "<<desktop->monitors.size()<<" monitors; no image written.\n";
             for(const auto& m:desktop->monitors)std::wcout<<m.deviceName<<L" "<<m.bounds.width()<<L"x"<<m.bounds.height()<<L" origin="<<m.bounds.left<<L","<<m.bounds.top<<L" HDR="<<m.hdr<<L" SDRWhite="<<m.sdrWhiteNits<<L" rotation="<<static_cast<int>(m.rotation)<<L" adapter="<<m.adapterLuid<<L'\n';return 0;

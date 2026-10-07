@@ -46,33 +46,60 @@ struct CropTestAccess {
             require(s.cursorAt({200,200})==IDC_CROSS,"Select outside invites replacement drag");
             s.busy_=true;require(s.cursorAt({500,400})==IDC_WAIT,"Export busy cursor wins over crop handles");
         });
-        test("Select replaces crop from outside and restores empty or interrupted gestures",[]{
-            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){});prepare(s);s.tool_=Tool::Select;
+        test("every tool replaces crop from outside and restores empty or interrupted gestures",[]{
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){});prepare(s);
+            s.history_.add(shape(Tool::Line,{600,500},{1000,900}));const auto points=s.history_.visible()[0].points;
             const std::pair<Point,Point> drags[]{{{200,200},{1000,900}},{{1200,200},{300,900}},{{200,1000},{1000,200}},{{1200,1000},{300,200}}};
-            for(const auto& [start,end]:drags){s.selection_=crop;s.mouseDown(s.owner(),start);require(s.dragging_ && s.selecting_ && s.handle_==Handle::None,"Outside Select starts replacement");s.mouseUp(end);require(s.selection_==normalized(start,end) && s.tool_==Tool::Select,"Replacement normalizes each direction and retains Select");}
-            for(const Point end:{Point{200,200},Point{300,200}}){s.selection_=crop;s.mouseDown(s.owner(),{200,200});s.mouseUp(end);require(s.selection_==crop,"Empty replacement restores previous crop");}
-            s.selection_=crop;s.mouseDown(s.owner(),{200,200});s.mouseMove({1000,900});cancel(s);require(s.selection_==crop && !s.dragging_,"Capture loss cancels replacement");
-            s.mouseDown(s.owner(),{900,600});s.mouseMove({1100,600});cancel(s);require(s.selection_==crop && s.tool_==Tool::Select,"Capture loss restores interrupted resize");
+            for(int tool=0;tool<9;++tool) {
+                s.tool_=static_cast<Tool>(tool);
+                for(const auto& [start,end]:drags) {
+                    s.selection_=crop;s.mouseDown(s.owner(),start);
+                    require(s.dragging_ && s.selecting_ && s.handle_==Handle::None && !s.draft_ && !s.text_.active(),"Blank outside canvas starts replacement with every tool");
+                    require(!IsWindowVisible(s.toolbar_),"Replacement hides toolbar");
+                    s.mouseMove(end);require(s.selection_==normalized(start,end),"Replacement preview normalizes each direction");
+                    s.mouseUp(end);require(s.selection_==normalized(start,end) && s.tool_==static_cast<Tool>(tool) && !s.dragging_,"Replacement retains tool and completes gesture");
+                    require(IsWindowVisible(s.toolbar_) && !s.draft_ && !s.text_.active() && s.history_.visible().size()==1 && s.history_.visible()[0].points==points,"Replacement restores toolbar without adding or transforming annotations");
+                }
+                s.selection_=crop;s.mouseDown(s.owner(),{200,200});s.mouseUp({6000,1200});
+                require(s.selection_==Rect{200,200,5760,1080} && s.tool_==static_cast<Tool>(tool),"Outside replacement clamps endpoint to captured desktop bounds");
+                for(const Point end:{Point{200,200},Point{300,200},Point{200,300}}) {
+                    s.selection_=crop;s.mouseDown(s.owner(),{200,200});s.mouseUp(end);
+                    require(s.selection_==crop && s.tool_==static_cast<Tool>(tool) && IsWindowVisible(s.toolbar_),"Click and zero-area replacements restore crop toolbar and tool");
+                    require(!s.draft_ && !s.text_.active() && s.history_.visible().size()==1,"Empty replacement creates no annotation or editor");
+                }
+                s.selection_=crop;s.mouseDown(s.owner(),{200,200});s.mouseMove({1000,900});cancel(s);
+                require(s.selection_==crop && !s.dragging_ && s.tool_==static_cast<Tool>(tool) && IsWindowVisible(s.toolbar_),"Capture loss restores replacement crop toolbar and tool");
+                s.mouseDown(s.owner(),{900,600});s.mouseMove({1100,600});cancel(s);
+                require(s.selection_==crop && !s.dragging_ && s.tool_==static_cast<Tool>(tool) && IsWindowVisible(s.toolbar_),"Capture loss restores interrupted resize");
+                require(!s.draft_ && !s.text_.active() && s.history_.visible().size()==1 && s.history_.visible()[0].points==points,"Interrupted gestures preserve annotation history");
+            }
+            s.mouseMove({200,200});require(s.selection_==crop && !s.dragging_,"Pointer movement without a drag leaves completed crop intact");
+            s.history_.clear();s.tool_=Tool::Select;
             s.selection_={};s.firstRegionCompleted_=false;s.mouseDown(s.owner(),{200,200});s.mouseUp({200,200});require(!s.firstRegionCompleted_ && s.selection_.empty(),"Empty initial region keeps transition pending");
             s.mouseDown(s.owner(),{200,200});s.mouseUp({800,700});require(s.firstRegionCompleted_ && s.tool_==Tool::Pen,"First valid region still selects Pen");
+            s.mouseDown(s.owner(),{1200,200});require(s.selecting_ && !s.draft_ && !IsWindowVisible(s.toolbar_),"Outside drag immediately after first crop replaces it with automatic Pen");
+            s.mouseUp({1600,600});require(s.selection_==Rect{1200,200,1600,600} && s.tool_==Tool::Pen && s.history_.visible().empty() && IsWindowVisible(s.toolbar_),"First replacement preserves automatic Pen and creates no ink");
         });
-        test("drawing tools start outside crop and preserve annotations through crop changes",[]{
+        test("drawing tools started inside can cross crop and survive crop changes",[]{
             Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){});prepare(s);
             for(const Tool tool:{Tool::Pen,Tool::Highlighter,Tool::Rectangle,Tool::Ellipse,Tool::Line,Tool::Arrow,Tool::Censor}) {
-                s.selection_=crop;s.tool_=tool;s.history_.clear();s.mouseDown(s.owner(),{200,200});
-                require(s.draft_ && s.draft_->points.front()==Point{200,200} && !s.selecting_ && IsWindowVisible(s.toolbar_),"Outside drawing starts while toolbar remains visible");
-                s.mouseMove({600,500});require(IsWindowVisible(s.toolbar_),"Drawing across crop does not hide toolbar");
-                OverlayTestAccess::clear(s);s.mouseMove({600,500});for(const auto& w:s.windows_)require(!GetUpdateRect(w->hwnd,nullptr,FALSE),"Repeated drawing pointer does not repaint");
-                s.mouseUp({600,500});require(s.history_.visible().size()==1 && s.history_.visible()[0].tool==tool,"Outside gesture commits one annotation");
-                const auto points=s.history_.visible()[0].points;require(points.front()==Point{200,200} && points.back()==Point{600,500},"Crossing crop preserves full desktop coordinates");
+                s.selection_=crop;s.tool_=tool;s.history_.clear();s.mouseDown(s.owner(),{600,500});
+                require(s.draft_ && s.draft_->points.front()==Point{600,500} && !s.selecting_ && IsWindowVisible(s.toolbar_),"Inside drawing starts while toolbar remains visible");
+                s.mouseMove({200,200});require(s.selection_==crop && IsWindowVisible(s.toolbar_),"Drawing across crop keeps original crop and toolbar");
+                OverlayTestAccess::clear(s);s.mouseMove({200,200});for(const auto& w:s.windows_)require(!GetUpdateRect(w->hwnd,nullptr,FALSE),"Repeated drawing pointer does not repaint");
+                s.mouseUp({200,200});require(s.history_.visible().size()==1 && s.history_.visible()[0].tool==tool && s.selection_==crop,"Crossing gesture commits one annotation without replacing crop");
+                const auto points=s.history_.visible()[0].points;require(points.front()==Point{600,500} && points.back()==Point{200,200},"Crossing crop preserves full desktop coordinates");
                 s.mouseDown(s.owner(),{900,600});s.mouseUp({800,600});require(s.selection_==Rect{500,400,800,800} && s.tool_==tool && s.history_.visible()[0].points==points,"Shrink does not transform or discard drawings");
-                s.tool_=Tool::Select;s.mouseDown(s.owner(),{1000,200});s.mouseUp({1400,600});require(s.history_.visible()[0].points==points,"Replacement preserves outside annotation");
+                s.mouseDown(s.owner(),{1000,200});s.mouseUp({1400,600});require(s.history_.visible().size()==1 && s.history_.visible()[0].points==points && s.tool_==tool,"Replacement with drawing tool preserves outside annotation");
                 require(s.history_.undo() && s.history_.visible().empty() && s.history_.redo() && s.history_.visible()[0].points==points,"Annotation undo/redo survives crop replacement");
             }
         });
         test("outside text editing uses desktop bounds and crop handles take priority",[]{
             Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
-            s.mouseDown(s.owner(),{1500,200});require(s.text_.active() && s.text_.annotation().textBounds->width()==300 && IsWindowVisible(s.toolbar_),"Text starts outside crop with desktop-based default width");s.mouseUp({1500,200});
+            s.mouseDown(s.owner(),{600,500});require(s.text_.active() && s.text_.annotation().textBounds->width()==300 && IsWindowVisible(s.toolbar_),"Text starts inside crop with desktop-based default width");s.mouseUp({600,500});
+            const auto initial=*s.text_.annotation().textBounds;const Point initialBorder{initial.left+30,initial.top};
+            s.mouseDown(s.owner(),initialBorder);s.mouseUp({initialBorder.x+900,initialBorder.y-300});
+            require(s.text_.annotation().textBounds==translated(initial,{900,-300}) && s.selection_==crop && IsWindowVisible(s.toolbar_),"Text movement can carry an inside box outside crop");
             s.text_.insert(L"one two");const auto position=s.text_.caretRect(5);const Point wordPoint{position.left+1,(position.top+position.bottom)/2};
             require(s.cursorAt(wordPoint)==IDC_IBEAM,"Outside text has editing cursor");s.mouseDoubleClick(s.owner(),wordPoint);require(s.text_.start()==4 && s.text_.end()==7,"Outside double-click selects word");
             s.mouseDown(s.owner(),wordPoint);require(s.textSelecting_ && s.textDragging_ && !s.dragging_,"Outside text selection routes to inline editor");s.mouseUp(wordPoint);
@@ -82,10 +109,22 @@ struct CropTestAccess {
             HRESULT session{};check(store->RequestLock(TS_LF_READ,&session),"Read outside caret");check(session,"Outside caret session");if(sink->failure)std::rethrow_exception(sink->failure);store->UnadviseSink(sink.Get());
             auto original=*s.text_.annotation().textBounds;ComPtr<IDWriteTextLayout> layout=s.text_.layout();const Point border{original.left+30,original.top};
             require(s.cursorAt(border)==IDC_SIZEALL,"Text-box border still moves");s.mouseDown(s.owner(),border);s.mouseUp({border.x+80,border.y+20});require(s.text_.annotation().textBounds==translated(original,{80,20}) && s.text_.layout()==layout.Get() && s.selection_==crop,"Text movement reuses layout without moving crop");
-            s.commitText();s.mouseDown(s.owner(),{200,200});s.mouseUp({1300,950});require(s.text_.annotation().textBounds==Rect{200,200,1300,950},"Initial text drag can cross crop bounds");s.text_.insert(L"outside text");
+            original=*s.text_.annotation().textBounds;const Point resize{original.right,(original.top+original.bottom)/2};
+            require(s.cursorAt(resize)==IDC_SIZEWE,"Outside active text has resize cursor");s.mouseDown(s.owner(),resize);
+            require(s.textDragging_ && s.textHandle_==Handle::E && !s.dragging_,"Outside active text handle routes to resize instead of replacement");
+            s.mouseUp({resize.x+80,resize.y});require(s.text_.annotation().textBounds==InlineText::resized(original,Handle::E,{80,0}) && s.selection_==crop,"Outside text resize leaves crop intact");
+            s.commitText();s.mouseDown(s.owner(),{600,500});s.mouseUp({1300,950});require(s.text_.annotation().textBounds==Rect{600,500,1300,950} && s.selection_==crop,"Initial text drag started inside can cross crop bounds");s.text_.insert(L"outside text");
             s.text_.bounds(crop);s.text_.beginComposition();s.text_.insert(L" composition");
             require(s.cursorAt({500,400})==IDC_SIZENWSE,"Crop handle cursor takes priority over overlapping text handle");s.mouseDown(s.owner(),{500,400});require(!s.text_.active() && !s.textStore_ && s.dragging_ && s.selecting_ && s.handle_==Handle::NW && s.history_.visible().size()==2,"Crop resize commits composing text exactly once");s.mouseUp({540,430});require(s.selection_==Rect{540,430,900,800} && s.tool_==Tool::Text,"Crop resize preserves Text tool");
-            s.mouseDown(s.owner(),{5750,200});require(s.text_.annotation().textBounds->width()==10,"Text default width stops at desktop edge");s.mouseUp({5750,200});s.commitText(true);
+            s.mouseDown(s.owner(),{5500,100});s.mouseUp({5760,600});require(s.selection_==Rect{5500,100,5760,600} && !s.text_.active(),"Blank outside Text gesture replaces crop before another box is created");
+            s.mouseDown(s.owner(),{5750,200});require(s.text_.active() && s.text_.annotation().textBounds->width()==10,"Inside text default width stops at desktop edge");s.mouseUp({5750,200});s.commitText(true);
+        });
+        test("blank outside replacement commits composing text exactly once",[]{
+            Settings settings;OverlaySession s(GetModuleHandleW(nullptr),OverlayTestAccess::desktop(),settings,[](SessionAction){},[](std::wstring){require(false,"Unexpected text error");});prepare(s);s.tool_=Tool::Text;
+            s.mouseDown(s.owner(),{600,500});s.mouseUp({600,500});s.text_.insert(L"composing text");s.text_.beginComposition();s.text_.insert(L" composition");
+            s.mouseDown(s.owner(),{1200,200});require(!s.text_.active() && !s.textStore_ && s.dragging_ && s.selecting_ && !s.draft_ && !IsWindowVisible(s.toolbar_),"Blank outside replacement closes composing editor and hides toolbar");
+            require(s.history_.visible().size()==1 && s.history_.visible()[0].text==L"composing text composition","Replacement commits composing text once");
+            s.mouseUp({1600,600});require(s.selection_==Rect{1200,200,1600,600} && s.tool_==Tool::Text && s.history_.visible().size()==1 && !s.text_.active() && IsWindowVisible(s.toolbar_),"Replacement creates no next text box or duplicate annotation");
         });
         test("desktop preview shows outside drawings with shade while exports remain cropped",[]{
             Graphics graphics({},true);DesktopImage desktop;auto m=monitor({0,0,256,160});

@@ -1,5 +1,13 @@
 # Validation record
 
+## Outside drag selection replacement - 2026-10-07
+
+Release build completed successfully with MSVC x64 using `cmake --build --preset release --parallel`. The fresh `ctest --preset release --verbose` run passed **65 checks, 0 failed** across `ScreenshotToolTests` (49) and `ScreenshotToolUpdateTests` (16), in 15.75 seconds. The rebuilt executable is `build/Release/ScreenshotTool.exe`. `git diff --check` passed.
+
+Regression coverage verifies outside replacement with all nine tools in all four drag directions, desktop clamping, click-only and zero-width/height rollback, capture-loss restoration, toolbar visibility, tool retention, and unchanged annotation coordinates/history. It also covers immediate replacement after the first crop automatically activates Pen, inside-started drawing/text gestures crossing outside, active outside text caret/word selection/movement/resizing and TSF extents, crop-handle priority, and composing text committed exactly once before blank outside replacement.
+
+Gesture tests use real offscreen Win32 windows without desktop capture or injected input. Manual screenshot-session interaction was not exercised in this run.
+
 ## GitHub release auto-updates - 2026-09-30
 
 Release builds succeeded with MSVC x64 in `build/update-validation`; the original `build/Release/ScreenshotTool.exe` was locked by a running instance and was left running. The fresh CTest run passed **64 checks, 0 failed** across `ScreenshotToolTests` (48) and `ScreenshotToolUpdateTests` (16), in 5.47 seconds. The generated executable version is **1.1.0**. A read-only live probe through the new WinHTTP client successfully queried GitHub and reported the app current against the existing `1.0` release. Import inspection confirmed only Windows system DLL dependencies.

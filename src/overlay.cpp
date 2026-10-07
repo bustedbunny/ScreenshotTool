@@ -26,7 +26,7 @@ constexpr ToolbarShortcut toolbarShortcuts[]{
     {ColorId,L'C'},{WidthId,L'W'},{TextSizeId,L'S'},{CensorModeId,L'P'}
 };
 const wchar_t* toolNames[]{L"Select",L"Pen",L"Highlight",L"Rectangle",L"Ellipse",L"Line",L"Arrow",L"Text",L"Censor"};
-const wchar_t* toolTips[]{L"Select: drag outside the crop to replace it. Crop resize handles work with every tool.",L"Pen: draw a freehand stroke anywhere on the captured desktop.",L"Highlighter: draw a translucent wide stroke anywhere on the captured desktop.",L"Rectangle: draw an outline anywhere on the captured desktop.",L"Ellipse: draw an oval outline anywhere on the captured desktop.",L"Line: drag between two desktop points.",L"Arrow: point at a detail anywhere on the captured desktop.",L"Text: click anywhere, type, then Ctrl+Enter or click outside the box to finish.",L"Censor: drag an opaque black cover anywhere (or choose pixelation)."};
+const wchar_t* toolTips[]{L"Select: drag outside the crop with any tool to replace it. Crop resize handles work with every tool.",L"Pen: start a freehand stroke inside the crop; continue anywhere on the captured desktop.",L"Highlighter: start a translucent wide stroke inside the crop; continue anywhere on the captured desktop.",L"Rectangle: start an outline inside the crop; drag anywhere on the captured desktop.",L"Ellipse: start an oval outline inside the crop; drag anywhere on the captured desktop.",L"Line: start inside the crop; drag to any desktop point.",L"Arrow: start inside the crop; point at any desktop detail.",L"Text: click or drag inside the crop, type, then Ctrl+Enter or click outside the box to finish. Active boxes can be edited outside the crop.",L"Censor: start an opaque black cover inside the crop; drag anywhere (or choose pixelation)."};
 }
 OverlaySession::OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(std::wstring)> failure)
     :instance_(instance),desktop_(std::move(desktop)),settings_(settings),action_(std::move(action)),failure_(std::move(failure)) {
@@ -171,7 +171,7 @@ void OverlaySession::mouseDown(HWND hwnd,Point p) {
     commitText();SetFocus(hwnd);p=clampPoint(p,desktop_->bounds());
     if(tool_==Tool::Select && selection_.contains(p))return;
     dragStart_=p;original_=selection_;draft_.reset();
-    handle_=Handle::None;selecting_=selection_.empty() || tool_==Tool::Select;
+    handle_=Handle::None;selecting_=selection_.empty() || tool_==Tool::Select || !selection_.contains(p);
     if(selecting_) {
         selection_={};
     } else {

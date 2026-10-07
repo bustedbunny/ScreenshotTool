@@ -31,16 +31,46 @@ struct OverlayTestAccess {
     static int dirtyButtons(const OverlaySession& s) {
         int result=0;for(const auto& b:s.buttons_)if(GetUpdateRect(b.hwnd,nullptr,FALSE))++result;return result;
     }
+    static std::wstring caption(HWND control) {
+        const int length=GetWindowTextLengthW(control);std::wstring result(static_cast<size_t>(length)+1,L'\0');
+        GetWindowTextW(control,result.data(),length+1);result.resize(length);return result;
+    }
     static void drag(OverlaySession& s,Handle handle=Handle::Move) {
         s.textDragging_=true;s.textCreating_=s.textSelecting_=false;s.textHandle_=handle;
         s.textStart_={0,0};s.textOriginal_=*s.text_.annotation().textBounds;s.text_.beginGesture();
     }
     static void tests() {
         test("localized toolbar fits all languages DPI scales and narrow work areas",[]{
+            struct ExpectedCaption {int id;TextId label;const wchar_t* suffix;};
+            constexpr ExpectedCaption expected[]{
+                {1000,TextId::Select,L" (V)"},{1001,TextId::Pen,L" (F)"},{1002,TextId::Highlight,L" (H)"},
+                {1003,TextId::Rectangle,L" (R)"},{1004,TextId::Ellipse,L" (E)"},{1005,TextId::Line,L" (L)"},
+                {1006,TextId::Arrow,L" (A)"},{1007,TextId::Text,L" (T)"},{1008,TextId::Censor,L" (B)"},
+                {1100,TextId::Color,L" (C)"},{1101,TextId::Width,L" (W)"},{1102,TextId::TextSize,L" (S)"},
+                {1103,TextId::CoverBlack,L" (P)"},{1200,TextId::Undo,L" (Ctrl + Z)"},{1201,TextId::Redo,L" (Ctrl + Y)"},
+                {1202,TextId::Copy,L" (Ctrl + C)"},{1203,TextId::Save,L" (Ctrl + S)"},
+                {1204,TextId::SaveAs,L" (Ctrl + Shift + S)"},{1205,TextId::Cancel,L" (Esc)"}
+            };
+            constexpr std::pair<int,int> values[]{{1,8},{2,12},{3,16},{5,20},{8,24},{12,32},{18,48},{24,72},{1,96},{24,144}};
             for(Language language:Languages) {
                 Settings settings;settings.language=language;
                 OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){require(false,"Unexpected localized toolbar error");});setup(s);
-                require(s.language_==language && s.buttons_.front().label==text(language,TextId::Select),"Toolbar uses selected language");
+                require(s.language_==language && s.buttons_.front().label==std::wstring(text(language,TextId::Select))+L" (V)","Toolbar uses selected language");
+                const auto verifyCaptions=[&] {
+                    require(s.buttons_.size()==std::size(expected),"Every toolbar command has an expected keybind caption");
+                    for(size_t index=0;index<s.buttons_.size();++index) {
+                        const auto& button=s.buttons_[index];const auto& fixture=expected[index];
+                        require(button.id==fixture.id,"Caption fixture matches toolbar command");
+                        std::wstring label(text(language,fixture.label));
+                        if(fixture.id==1101)label=format(language,TextId::WidthValue,{std::to_wstring(static_cast<int>(settings.strokeWidth))});
+                        if(fixture.id==1102)label=format(language,TextId::TextSizeValue,{std::to_wstring(static_cast<int>(settings.textSize))});
+                        if(fixture.id==1103)label=text(language,s.pixelated_?TextId::CoverPixelate:TextId::CoverBlack);
+                        label+=fixture.suffix;
+                        require(button.label==label,"Localized caption retains exactly one correct keybind suffix");
+                        require(caption(button.hwnd)==label,"Native caption matches stored caption and keybind");
+                    }
+                };
+                verifyCaptions();
                 require(IsWindow(s.tooltip_) && SendMessageW(s.tooltip_,TTM_GETTOOLCOUNT,0,0)==static_cast<LRESULT>(s.buttons_.size()),"Every toolbar control has a registered native tooltip");
                 std::vector<std::wstring> originalTips;std::vector<const wchar_t*> originalTipBuffers;
                 for(const auto& button:s.buttons_){originalTips.push_back(button.tip);originalTipBuffers.push_back(button.tip.data());}
@@ -49,14 +79,20 @@ struct OverlayTestAccess {
                     require(s.toolbarDpi_==dpi && s.toolbarWidth_<=availableWidth,"Toolbar wraps without reducing actual monitor DPI");
                     require(reinterpret_cast<HFONT>(SendMessageW(s.tooltip_,WM_GETFONT,0,0))==s.toolbarFont_,"Tooltips use the locale toolbar font");
                     require(SendMessageW(s.tooltip_,TTM_GETMAXTIPWIDTH,0,0)<=MulDiv(420,dpi,96),"Long translated tips wrap within a DPI-scaled width");
-                    settings.strokeWidth=24;settings.textSize=144;s.refreshButtons();
-                    for(bool pixelated:{false,true}) {
+                    std::vector<RECT> originalBounds;
+                    for(const auto& button:s.buttons_) {
+                        RECT bounds{};GetWindowRect(button.hwnd,&bounds);MapWindowPoints(nullptr,s.toolbar_,reinterpret_cast<POINT*>(&bounds),2);originalBounds.push_back(bounds);
+                    }
+                    for(const auto [strokeWidth,textSize]:values)for(bool pixelated:{false,true}) {
+                        settings.strokeWidth=static_cast<float>(strokeWidth);settings.textSize=static_cast<float>(textSize);
                         s.pixelated_=pixelated;s.refreshButtons();
+                        verifyCaptions();
                         RECT client{};GetClientRect(s.toolbar_,&client);HDC dc=GetDC(s.toolbar_);auto old=SelectObject(dc,s.toolbarFont_);
                         std::vector<RECT> rectangles;
                         for(size_t index=0;index<s.buttons_.size();++index) {
                             const auto& button=s.buttons_[index];
                             RECT bounds{};GetWindowRect(button.hwnd,&bounds);MapWindowPoints(nullptr,s.toolbar_,reinterpret_cast<POINT*>(&bounds),2);
+                            require(EqualRect(&bounds,&originalBounds[index]),"Changing values or censor mode keeps controls in place");
                             require(bounds.left>=0 && bounds.right<=client.right && bounds.top>=0 && bounds.bottom<=s.toolbarStatusTop_,"Every control remains inside toolbar and above status");
                             for(const auto& previous:rectangles){RECT overlap{};require(!IntersectRect(&overlap,&bounds,&previous),"Wrapped controls do not overlap");}rectangles.push_back(bounds);
                             const int padding=MulDiv(button.id==1100?40:20,dpi,96);
@@ -84,6 +120,7 @@ struct OverlayTestAccess {
                     clear(s);Counts counts;for(const auto& b:s.buttons_)SetWindowSubclass(b.hwnd,countButton,1,reinterpret_cast<DWORD_PTR>(&counts));
                     for(int i=0;i<10;++i){s.layoutToolbar(dpi,availableWidth);s.refreshButtons();s.refreshStatus();}
                     require(!counts.labels && !counts.enabled && !counts.positions && !counts.fonts,"Identical refresh does not relayout or mutate toolbar controls");
+                    verifyCaptions();
                     for(const auto& b:s.buttons_)RemoveWindowSubclass(b.hwnd,countButton,1);
                 }
             }
@@ -91,7 +128,7 @@ struct OverlayTestAccess {
         test("overlay keeps its language snapshot and reports owned contextual messages",[]{
             Settings settings;settings.language=Language::Japanese;std::vector<Message> failures;
             OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[&](Message message){failures.push_back(std::move(message));});settings.language=Language::German;setup(s);
-            require(s.language_==Language::Japanese && s.buttons_.front().label==text(Language::Japanese,TextId::Select),"Active session keeps initial effective language");
+            require(s.language_==Language::Japanese && s.buttons_.front().label==std::wstring(text(Language::Japanese,TextId::Select))+L" (V)","Active session keeps initial effective language");
             s.monitorMessage(*s.windows_.front(),WM_DPICHANGED,0,0);
             require(failures.size()==1 && failures.front().id==TextId::DisplayScalingChanged,"DPI failure carries translatable message ID");
             s.report(std::runtime_error("Direct2D operation failed: 0x887A0005"));s.report(std::runtime_error("second failure"));
@@ -111,8 +148,12 @@ struct OverlayTestAccess {
             s.history_.undo();s.refreshButtons();require(counts.enabled==3,"Undo and Redo update after undo");clear(s);
             s.history_.redo();s.refreshButtons();require(counts.enabled==5,"Undo and Redo update after redo");clear(s);
             s.selection_.right-=10;s.refreshStatus();RECT dirty{},line=s.statusRect();require(GetUpdateRect(s.toolbar_,&dirty,FALSE) && EqualRect(&dirty,&line),"Status line invalidates separately");require(!dirtyButtons(s),"Status does not dirty buttons");clear(s);
+            std::vector<std::wstring> beforeBusyLabels;for(const auto& button:s.buttons_)beforeBusyLabels.push_back(button.label);
             s.busy_=true;s.refreshButtons();s.refreshStatus();require(counts.enabled==9,"Busy disables Undo and three export actions");clear(s);
             s.refreshButtons();s.refreshStatus();require(counts.enabled==9 && !dirtyButtons(s) && !GetUpdateRect(s.toolbar_,nullptr,FALSE),"Repeated busy state is a no-op");
+            for(size_t index=0;index<s.buttons_.size();++index) {
+                const auto& button=s.buttons_[index];require(button.label==beforeBusyLabels[index] && caption(button.hwnd)==button.label,"Disabled controls retain keybind captions without mutation");
+            }
         });
         test("toolbar parent clips children and paints only its invalid area",[]{
             Settings settings;OverlaySession s(GetModuleHandleW(nullptr),desktop(),settings,[](SessionAction){},[](Message){});setup(s);

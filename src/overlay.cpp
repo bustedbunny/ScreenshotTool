@@ -27,6 +27,21 @@ constexpr ToolbarShortcut toolbarShortcuts[]{
 };
 constexpr TextId toolNames[]{TextId::Select,TextId::Pen,TextId::Highlight,TextId::Rectangle,TextId::Ellipse,TextId::Line,TextId::Arrow,TextId::Text,TextId::Censor};
 constexpr TextId toolTips[]{TextId::SelectTip,TextId::PenTip,TextId::HighlightTip,TextId::RectangleTip,TextId::EllipseTip,TextId::LineTip,TextId::ArrowTip,TextId::TextTip,TextId::CensorTip};
+std::wstring toolbarLabel(int id,std::wstring_view name) {
+    std::wstring key;
+    for(const auto& shortcut:toolbarShortcuts)if(shortcut.id==id){key=shortcut.key;break;}
+    switch(id) {
+    case UndoId:key=L"Ctrl + Z";break;
+    case RedoId:key=L"Ctrl + Y";break;
+    case CopyId:key=L"Ctrl + C";break;
+    case SaveId:key=L"Ctrl + S";break;
+    case SaveAsId:key=L"Ctrl + Shift + S";break;
+    case CancelId:key=L"Esc";break;
+    }
+    std::wstring label(name);
+    if(!key.empty()){label+=L" (";label+=key;label+=L")";}
+    return label;
+}
 }
 OverlaySession::OverlaySession(HINSTANCE instance,std::shared_ptr<const DesktopImage> desktop,Settings& settings,std::function<void(SessionAction)> action,std::function<void(Message)> failure)
     :instance_(instance),desktop_(std::move(desktop)),settings_(settings),language_(settings.effectiveLanguage()),action_(std::move(action)),failure_(std::move(failure)) {
@@ -341,12 +356,12 @@ void OverlaySession::createToolbar() {
     tooltip_=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP|TTS_NOPREFIX,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,CW_USEDEFAULT,toolbar_,nullptr,instance_,nullptr);
     wincheck(tooltip_!=nullptr,"Create toolbar tooltip");
     auto add=[&](int id,TextId labelId,TextId tipId) {
-        const auto label=text(language_,labelId);
+        auto label=toolbarLabel(id,text(language_,labelId));
         HWND button=CreateWindowExW(0,L"BUTTON",label.data(),WS_CHILD|WS_VISIBLE|WS_TABSTOP|BS_OWNERDRAW,0,0,10,10,toolbar_,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance_,nullptr);
         wincheck(button!=nullptr,"Create toolbar button");
         std::wstring hint(text(language_,tipId));
         for(const auto& shortcut:toolbarShortcuts)if(shortcut.id==id){hint+=L" (";hint+=shortcut.key;hint+=L")";break;}
-        buttons_.push_back({id,button,std::wstring(label),std::move(hint)});
+        buttons_.push_back({id,button,std::move(label),std::move(hint)});
     };
     for(int i=0;i<9;++i)add(ToolBase+i,toolNames[i],toolTips[i]);
     add(ColorId,TextId::Color,TextId::ColorTip);add(WidthId,TextId::Width,TextId::WidthTip);add(TextSizeId,TextId::TextSize,TextId::TextSizeTip);add(CensorModeId,TextId::CoverBlack,TextId::CensorModeTip);
@@ -376,9 +391,9 @@ void OverlaySession::layoutToolbar(unsigned dpi,int availableWidth) {
     for(const auto& button:buttons_) {
         std::vector<std::wstring> candidates{button.label};
         // Reserve dynamic labels once, so changing a value never moves controls.
-        if(button.id==WidthId)for(int value:{1,2,3,5,8,12,18,24})candidates.push_back(format(language_,TextId::WidthValue,{std::to_wstring(value)}));
-        if(button.id==TextSizeId)for(int value:{8,12,16,20,24,32,48,72,96,144})candidates.push_back(format(language_,TextId::TextSizeValue,{std::to_wstring(value)}));
-        if(button.id==CensorModeId){candidates.emplace_back(text(language_,TextId::CoverBlack));candidates.emplace_back(text(language_,TextId::CoverPixelate));}
+        if(button.id==WidthId)for(int value:{1,2,3,5,8,12,18,24})candidates.push_back(toolbarLabel(button.id,format(language_,TextId::WidthValue,{std::to_wstring(value)})));
+        if(button.id==TextSizeId)for(int value:{8,12,16,20,24,32,48,72,96,144})candidates.push_back(toolbarLabel(button.id,format(language_,TextId::TextSizeValue,{std::to_wstring(value)})));
+        if(button.id==CensorModeId){candidates.push_back(toolbarLabel(button.id,text(language_,TextId::CoverBlack)));candidates.push_back(toolbarLabel(button.id,text(language_,TextId::CoverPixelate)));}
         int width=px(60);for(const auto& label:candidates)width=std::max(width,measure(label)+px(button.id==ColorId?40:20));
         widths.push_back(width);labels.push_back(std::move(candidates));
     }
@@ -448,9 +463,9 @@ void OverlaySession::refreshButtons() {
     for(auto& button:buttons_) {
         auto label=button.label;bool enabled=true;
         switch(button.id) {
-        case WidthId:label=format(language_,TextId::WidthValue,{std::to_wstring(static_cast<int>(settings_.strokeWidth))});break;
-        case TextSizeId:label=format(language_,TextId::TextSizeValue,{std::to_wstring(static_cast<int>(settings_.textSize))});break;
-        case CensorModeId:label=text(language_,pixelated_?TextId::CoverPixelate:TextId::CoverBlack);break;
+        case WidthId:label=toolbarLabel(button.id,format(language_,TextId::WidthValue,{std::to_wstring(static_cast<int>(settings_.strokeWidth))}));break;
+        case TextSizeId:label=toolbarLabel(button.id,format(language_,TextId::TextSizeValue,{std::to_wstring(static_cast<int>(settings_.textSize))}));break;
+        case CensorModeId:label=toolbarLabel(button.id,text(language_,pixelated_?TextId::CoverPixelate:TextId::CoverBlack));break;
         case UndoId:enabled=!busy_ && history_.canUndo();break;
         case RedoId:enabled=!busy_ && history_.canRedo();break;
         case CopyId:case SaveId:case SaveAsId:enabled=!busy_ && !selection_.empty();break;

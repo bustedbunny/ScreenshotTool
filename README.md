@@ -30,7 +30,7 @@ The default censor is an opaque black rectangle. The optional pixelation mode av
 | Ctrl+Enter while entering text | Commit the text |
 | Tab / Shift+Tab | Navigate toolbar controls |
 
-The fixed single-letter shortcuts work after a region is completed, with no Ctrl, Shift, Alt, or Windows key held, and pause during dragging or export. Held-key repeats are ignored. Hover a toolbar control to see its shortcut.
+The fixed single-letter shortcuts work after a region is completed, with no Ctrl, Shift, Alt, or Windows key held, and pause during dragging or export. Held-key repeats are ignored. Toolbar names show their shortcuts, such as **Pen (F)** and **Undo (Ctrl + Z)**; hover a control for more detail.
 
 Text is edited directly on the screenshot, including outside the crop, with a caret, selection, dashed border, and eight handles. Click inside the crop with **Text** for a 300-pixel-wide box (limited by the remaining captured desktop width), or drag its initial bounds from inside the crop to any desktop point. Click or drag inside the active box to position the caret or select text; double-click selects a word. Drag the border to move the box and handles to resize it, including outside the crop. Crop handles take priority when they overlap the text box; using one commits the text before resizing the crop. Width changes wrap text without scaling the font, and the box grows vertically to retain all content.
 
